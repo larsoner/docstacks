@@ -10,11 +10,25 @@ Think of it as **mike for Sphinx**: [mike](https://github.com/jimporter/mike) ow
 
 - **It never invokes a documentation builder.** No `sphinx-build`, no `make html`, no plugins, no conf.py. You hand it a directory of already-built HTML.
 - **It never rebuilds old versions.** Previously deployed versions are opaque byte trees that get moved, aliased, or deleted — never regenerated.
+- **It does not clone, and it does not own your credentials.** You give it a checkout you made; it gives you a commit. Remote URLs, branch names, tokens, and caching stay in your CI config where you can see them.
 - It is not a static-site host, a redirect service, or a theme.
 
 ## What works today
 
-Milestone 1 — the manifest layer only:
+Deploy a build into a checkout of your GitHub Pages repo, alias it, update the manifest, and commit — all in one transaction:
+
+```bash
+docstacks deploy doc/_build/html 1.13 \
+    --repo ~/mne-tools.github.io \
+    --alias stable \
+    --base-url https://mne.tools/ \
+    --source-sha $GIT_SHA \
+    --push
+```
+
+That copies the build to `1.13/`, points the `stable` symlink at it, rewrites `versions.json`, and commits with `Deployed-version:` and `Source-sha:` trailers. Everything else at the site root — `CNAME`, `.nojekyll`, your landing page, other versions — is left exactly as it was. Making the checkout is your job (a shallow sparse clone is the usual choice); `docstacks` refuses to touch anything but a clean working tree.
+
+The manifest tools stand alone too:
 
 ```bash
 docstacks validate versions.json          # report problems, exit 1 if any
@@ -24,7 +38,11 @@ docstacks list versions.json
 
 `docstacks.manifest` round-trips `versions.json` byte-stably, preserving entry order, indentation, unknown keys, and hand-added foreign entries (legacy catch-alls and the like). `docstacks.tree.scan_tree` derives a manifest from a deployed site directory, resolving alias symlink chains such as `stable -> 2.1 -> 2.1.3`.
 
-Deploying is not implemented yet. See [DESIGN.md](DESIGN.md) for the roadmap.
+`promote`, `prune`, `delete`, and `retitle` are not implemented yet. See [DESIGN.md](DESIGN.md) for the roadmap.
+
+## Requirements
+
+Python 3.10+ and a `git` binary on `PATH`. No Python runtime dependencies at all — that is deliberate, so installing this in a documentation CI job cannot disturb the doc build's own environment.
 
 ## Development
 

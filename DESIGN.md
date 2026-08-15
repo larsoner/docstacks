@@ -41,29 +41,31 @@ Hence `Entry` carries an `extra` dict of unrecognized keys, serialization emits 
 
 ## Roadmap
 
-### Milestone 1 — manifest layer (this work)
+### Milestone 1 — manifest layer (done)
 
 `docstacks.manifest` (model, byte-stable JSON round-trip, mutations, `validate()`), `docstacks.tree.scan_tree` (derive a manifest by scanning a deployed site directory, resolving alias symlinks), and a thin CLI over both: `validate`, `generate`, `list`.
 
 No git, no deployment. This is the layer every later milestone builds on, and it is independently useful: a project can drop `docstacks validate` into CI today, or regenerate a drifted `versions.json` from what is actually deployed.
 
-### Milestone 2 — git deploy backend
+### Milestone 2 — git deploy backend (done)
 
 ```
-docstacks deploy <html-dir> <version> [--alias stable]
+docstacks deploy <html-dir> <version> --repo <checkout> [--alias stable]
 ```
 
-Operates on a **shallow, sparse checkout** of the pages branch — cloning the full history of a docs repo is prohibitive (MNE's is many GB), and sparse checkout means only the paths being touched are materialized.
-
-- Aliases are **symlinks only**, never copies. `stable -> 1.12` is a git symlink object; duplicating the tree would double the repo size per release and break relative asset paths differently across the two copies.
+- **`docstacks` does not clone.** The `--repo` argument is an existing local checkout that the caller produced; `deploy` refuses anything that is not a clean git working tree. The intended production shape is still a **shallow, sparse checkout** of the pages branch — cloning the full history of a docs repo is prohibitive (MNE's is many GB), and sparse checkout materializes only the paths being touched — but *making* that checkout is a two-line CI recipe (`git clone --depth 1 --filter=blob:none --sparse`), and owning it inside the tool would mean owning credentials, remote URLs, branch naming, and caching too. Keeping `deploy` a pure function of "a directory of HTML plus a checkout" is what makes it testable against a `tmp_path` repo and reusable from any CI. Recipes for the clone step belong in the docs, not in the code.
+- **git is a tool dependency, not a package one.** Everything git-related shells out to the `git` binary (`docstacks._git`). A git library would be the only runtime dependency in the project, which the zero-dependency constraint forbids, and the operations needed here are half a dozen plumbing-free commands.
+- Aliases are **symlinks only**, never copies. `stable -> 1.12` is a git symlink object; duplicating the tree would double the repo size per release and break relative asset paths differently across the two copies. An alias name that already exists as a *real* directory is a hard error: MNE's site has exactly that (a real `stable/`), and a tool that deletes a real directory to make room for a symlink is a tool that can destroy a deployed version.
 - The commit carries trailers recording provenance:
   ```
   Deployed-version: 1.12
   Source-sha: <sha of the source repo commit that produced the HTML>
   ```
-  so any deployed directory can be traced back to the exact source revision without a side-channel.
+  so any deployed directory can be traced back to the exact source revision without a side-channel. They are written as a second `-m` paragraph rather than with `git commit --trailer`, which is too new to rely on across CI images.
 - `versions.json` at the repo root is updated **in the same commit** as the content. A commit that adds `1.12/` without listing it, or lists it without adding it, is a broken intermediate state that users can hit mid-deploy.
-- **Unmanaged root files are preserved**: `CNAME`, `.nojekyll`, `index.html`, `robots.txt`, `.github/` and anything else at the root that is not a version directory `docstacks` knows about. `docstacks` owns the version directories, the alias symlinks, and `versions.json`; everything else at the root is somebody else's and must round-trip untouched.
+- **Unmanaged root files are preserved**: `CNAME`, `.nojekyll`, `index.html`, `robots.txt`, `.github/` and anything else at the root that is not a version directory `docstacks` knows about. `docstacks` owns the version directories, the alias symlinks, and `versions.json`; everything else at the root is somebody else's and must round-trip untouched. Staging is therefore path-scoped (`git add -A -- <version> <aliases> versions.json`), never a blanket repo-wide add.
+- **Guards run before anything is written.** An empty build (no `index.html`), a dirty checkout, a bad version component, or an alias over a real directory all fail with the working tree exactly as it was found. Deploying byte-identical content twice is likewise refused rather than committed empty.
+- Aliases are **not remembered between deploys**. `deploy` writes what it is told and nothing more, so redeploying a version without repeating `--alias stable` moves its manifest URL back to the version directory. Alias *state* belongs to `promote` in milestone 3, which will reason about the site as a whole.
 
 ### Milestone 3 — lifecycle commands
 

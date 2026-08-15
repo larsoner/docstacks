@@ -6,7 +6,7 @@ Guidance for AI coding agents working in this repository.
 
 `docstacks` manages the one-directory-per-version documentation layout that scientific Python projects publish to GitHub Pages: a site root holding `dev/`, `1.12/`, `1.11/`, a `stable` symlink, and a `versions.json` manifest read by the pydata-sphinx-theme version switcher.
 It is "mike for Sphinx" — it owns the deploy transaction, not the build.
-Today only the manifest layer exists (`manifest.py`, `tree.py`, and a thin CLI over both); the git deploy backend and the `promote`/`prune`/`delete`/`retitle` lifecycle commands are still to come.
+Today it has the manifest layer (`manifest.py`, `tree.py`) and the git deploy backend (`deploy.py` over `_git.py`), with a thin CLI over all of it; the `promote`/`prune`/`delete`/`retitle` lifecycle commands are still to come.
 Read [DESIGN.md](DESIGN.md) before adding anything structural — it records the roadmap, the switcher schema semantics, and the reasoning behind the constraints below.
 
 ## Dev setup
@@ -14,6 +14,8 @@ Read [DESIGN.md](DESIGN.md) before adding anything structural — it records the
 ```bash
 uv venv && uv pip install -e . --group dev
 ```
+
+`git` must be on `PATH`: `deploy.py` shells out to the binary, and the deploy tests build throwaway repositories under `tmp_path`.
 
 Or with pip:
 
@@ -30,7 +32,7 @@ prek install
 ## Commands
 
 ```bash
-pytest                                    # the whole suite, runs in well under a second
+pytest                                    # the whole suite, a few seconds
 pytest tests/test_tree.py -k alias_chain  # one test
 pytest --cov=docstacks --cov-report=term-missing
 
@@ -68,6 +70,9 @@ Anything new in that family should do the same.
 Assume the reader knows Python and has the diff in front of them.
 A comment earns its place by recording a constraint, an invariant, or a surprise — the pandas-style alias chain that `tree.py` has to resolve, for instance — and stays to one line.
 
-**No global state and no I/O outside the obvious places.**
-`manifest.py` touches the filesystem only in `load` and `dump`; `tree.py` reads a directory and nothing else.
-Keeping the library side-effect-free is what makes the deploy transaction testable when it lands.
+**No global state, and I/O stays where it is expected.**
+`manifest.py` touches the filesystem only in `load` and `dump`; `tree.py` reads a directory and nothing else; `deploy.py` is the one module that writes, and it does so only after every guard has passed.
+
+**git is a tool dependency, not a package one.**
+All git access goes through `docstacks._git`, which shells out to the binary; do not reach for a git library, and do not call `subprocess` for git anywhere else.
+A deploy must never leave a half-written checkout: validate everything up front, then mutate, then stage path-by-path (`git add -A -- <paths>`) rather than with a repo-wide add.
