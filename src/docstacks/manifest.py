@@ -19,6 +19,9 @@ __all__ = ["Entry", "Manifest"]
 
 _KNOWN_KEYS = ("name", "version", "url", "preferred")
 
+#: Indentation for manifests that were not read from an existing file.
+DEFAULT_INDENT = 2
+
 
 @dataclass
 class Entry:
@@ -105,10 +108,20 @@ class Manifest:
     ----------
     entries : iterable of Entry | None
         Initial entries, in switcher order.
+    indent : int | str
+        Indentation used when serializing. :meth:`load` and :meth:`loads` sniff
+        this from the source text so that editing a manifest does not reindent
+        the whole file.
     """
 
-    def __init__(self, entries: list[Entry] | None = None) -> None:
+    def __init__(
+        self,
+        entries: list[Entry] | None = None,
+        *,
+        indent: int | str = DEFAULT_INDENT,
+    ) -> None:
         self.entries: list[Entry] = list(entries or [])
+        self.indent: int | str = indent
 
     def __repr__(self) -> str:
         versions = ", ".join(repr(entry.version) for entry in self.entries)
@@ -139,7 +152,7 @@ class Manifest:
         Returns
         -------
         manifest : Manifest
-            The parsed manifest.
+            The parsed manifest, carrying the indentation of ``text``.
         """
         data = json.loads(text)
         if not isinstance(data, list):
@@ -154,7 +167,7 @@ class Manifest:
                     f"{type(item).__name__}"
                 )
             entries.append(Entry.from_dict(item))
-        return cls(entries)
+        return cls(entries, indent=_sniff_indent(text))
 
     @classmethod
     def load(cls, path: str | os.PathLike[str]) -> Manifest:
@@ -168,7 +181,7 @@ class Manifest:
         Returns
         -------
         manifest : Manifest
-            The parsed manifest.
+            The parsed manifest, carrying the indentation of the file.
         """
         with open(path, encoding="utf-8") as fid:
             return cls.loads(fid.read())
@@ -179,11 +192,11 @@ class Manifest:
         Returns
         -------
         text : str
-            Two-space-indented JSON array with a trailing newline, non-ASCII
-            characters left as-is.
+            JSON array indented per :attr:`indent`, with a trailing newline and
+            non-ASCII characters left as-is.
         """
         data = [entry.to_dict() for entry in self.entries]
-        return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+        return json.dumps(data, indent=self.indent, ensure_ascii=False) + "\n"
 
     def dump(self, path: str | os.PathLike[str]) -> None:
         """Write the manifest to a file.
@@ -351,6 +364,17 @@ class Manifest:
         elif not preferred and self.entries:
             problems.append("no entry is marked preferred")
         return problems
+
+
+def _sniff_indent(text: str) -> int | str:
+    """Leading whitespace of the first indented line, as a json.dumps indent."""
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if not stripped or stripped == line:
+            continue
+        lead = line[: len(line) - len(stripped)]
+        return len(lead) if lead == " " * len(lead) else lead
+    return DEFAULT_INDENT
 
 
 def _label(index: int, entry: Entry) -> str:

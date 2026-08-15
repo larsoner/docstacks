@@ -23,6 +23,29 @@ def test_round_trip_is_byte_stable(mne_manifest_text: str, tmp_path: Path) -> No
     assert Manifest.load(path) == manifest
 
 
+def test_round_trip_preserves_indent(
+    mne_manifest_4space_text: str, tmp_path: Path
+) -> None:
+    """Reading a 4-space manifest and writing it back does not reindent it."""
+    path = tmp_path / "versions.json"
+    path.write_text(mne_manifest_4space_text, encoding="utf-8")
+    manifest = Manifest.load(path)
+    assert manifest.indent == 4
+    manifest.set_preferred("1.11").set_preferred("1.12")
+    manifest.dump(path)
+    assert path.read_text(encoding="utf-8") == mne_manifest_4space_text
+
+
+@pytest.mark.parametrize(
+    ("text", "indent"),
+    [("[]\n", 2), ("[\n\t{}\n]\n", "\t"), ('[\n   {"a": 1}\n]\n', 3)],
+)
+def test_indent_sniffing(text: str, indent: int | str) -> None:
+    """Indent is taken from the first indented line, defaulting to two spaces."""
+    assert Manifest.loads(text).indent == indent
+    assert Manifest().indent == 2
+
+
 def test_serialization_omits_defaults() -> None:
     """``name`` and a false ``preferred`` are left out, extras come last."""
     entry = Entry(version="1.11", url="https://x/1.11/", extra={"z": 1, "a": 2})

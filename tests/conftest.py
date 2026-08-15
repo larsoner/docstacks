@@ -38,10 +38,28 @@ MNE_MANIFEST = """\
 """
 
 
+def _reindent(text: str, indent: str) -> str:
+    lines = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip(" ")
+        lines.append(indent * ((len(line) - len(stripped)) // 2) + stripped)
+    return "".join(lines)
+
+
+#: MNE's real versions.json is indented with four spaces, not two.
+MNE_MANIFEST_4SPACE = _reindent(MNE_MANIFEST, "    ")
+
+
 @pytest.fixture
 def mne_manifest_text() -> str:
     """Realistic ``versions.json`` text."""
     return MNE_MANIFEST
+
+
+@pytest.fixture
+def mne_manifest_4space_text() -> str:
+    """Realistic ``versions.json`` text, indented the way MNE ships it."""
+    return MNE_MANIFEST_4SPACE
 
 
 @pytest.fixture
