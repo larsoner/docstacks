@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from conftest import git
-from docstacks.deploy import DeployError, deploy
+from docstacks.deploy import DeployError, deploy, promote
 from docstacks.manifest import Manifest
 
 BASE_URL = "https://mne.tools/"
@@ -271,3 +271,105 @@ def test_deploy_refuses_no_op(html_dir: Path, site_repo: Path) -> None:
     deploy(html_dir, "1.12", site_repo, base_url=BASE_URL)
     with pytest.raises(DeployError, match="nothing to deploy"):
         deploy(html_dir, "1.12", site_repo, base_url=BASE_URL)
+
+
+def test_deploy_refuses_detached_head_before_writing(
+    html_dir: Path, site_repo: Path
+) -> None:
+    """A push that cannot work is caught before the deploy, not after committing."""
+    head = git(site_repo, "rev-parse", "HEAD")
+    git(site_repo, "checkout", "--detach")
+    with pytest.raises(DeployError, match="detached HEAD"):
+        deploy(html_dir, "1.12", site_repo, base_url=BASE_URL, push=True)
+    assert not (site_repo / "1.12").exists()
+    assert git(site_repo, "rev-parse", "HEAD") == head
+
+
+def test_promote_release_day(html_dir: Path, release_repo: Path) -> None:
+    """The whole release-day transaction, in a single commit.
+
+    The outgoing stable must stop claiming the /stable/ URL the moment the
+    symlink moves, or the manifest tells every visitor a lie.
+    """
+    before = int(git(release_repo, "rev-list", "--count", "HEAD"))
+    sha = promote(
+        html_dir, "1.13", release_repo, base_url=BASE_URL, source_sha="cafe1234"
+    )
+
+    assert int(git(release_repo, "rev-list", "--count", "HEAD")) == before + 1
+    assert os.readlink(release_repo / "stable") == "1.13"
+    assert (release_repo / "1.13" / "index.html").read_text() == "<html>1.12</html>"
+    assert (release_repo / "1.12" / "index.html").read_text() == "<html>1.12</html>"
+
+    manifest = Manifest.load(release_repo / "versions.json")
+    assert [
+        (entry.version, entry.name, entry.url, entry.preferred) for entry in manifest
+    ] == [
+        ("dev", "1.13 (dev)", "https://mne.tools/dev/", False),
+        ("1.13", "1.13 (stable)", "https://mne.tools/stable/", True),
+        ("1.12", None, "https://mne.tools/1.12/", False),
+        ("1.11", "1.11", "https://mne.tools/1.11/", False),
+        ("legacy", "≤ 0.20 (legacy)", "https://mne.tools/dev/old_versions/", False),
+    ]
+    assert manifest.entries[3].extra == {"internal": "keep me"}
+    assert manifest.validate() == []
+
+    body = git(release_repo, "log", "-1", "--format=%B", sha)
+    assert body.splitlines()[:4] == [
+        "Promote 1.13 to stable",
+        "",
+        "Deployed-version: 1.13",
+        "Source-sha: cafe1234",
+    ]
+
+
+def test_promote_keeps_a_hand_written_name(html_dir: Path, release_repo: Path) -> None:
+    """A custom label survives demotion; only the URL it implies is corrected."""
+    path = release_repo / "versions.json"
+    Manifest.load(path).retitle("1.12", "1.12 LTS").dump(path)
+    git(release_repo, "commit", "-am", "Hand-label 1.12")
+
+    promote(html_dir, "1.13", release_repo, base_url=BASE_URL)
+
+    entry = Manifest.load(path).get("1.12")
+    assert entry is not None
+    assert entry.name == "1.12 LTS"
+    assert entry.url == "https://mne.tools/1.12/"
+
+
+def test_promote_without_an_incumbent(html_dir: Path, release_repo: Path) -> None:
+    """With nothing preferred and no stable URL in use, nothing gets demoted."""
+    path = release_repo / "versions.json"
+    manifest = Manifest.load(path)
+    entry = manifest.get("1.12")
+    assert entry is not None
+    entry.preferred, entry.name, entry.url = False, None, "https://mne.tools/1.12/"
+    manifest.dump(path)
+    (release_repo / "stable").unlink()
+    git(release_repo, "add", "-A")
+    git(release_repo, "commit", "-m", "No stable yet")
+
+    promote(html_dir, "1.13", release_repo, base_url=BASE_URL)
+
+    manifest = Manifest.load(path)
+    assert [entry.version for entry in manifest if entry.preferred] == ["1.13"]
+    untouched = manifest.get("1.12")
+    assert untouched is not None
+    assert (untouched.name, untouched.url) == (None, "https://mne.tools/1.12/")
+
+
+def test_promote_custom_alias_and_message(html_dir: Path, release_repo: Path) -> None:
+    """Promoting under a different alias still demotes the entry it displaced."""
+    promote(
+        html_dir,
+        "1.13",
+        release_repo,
+        aliases=("stable", "current"),
+        base_url=BASE_URL,
+        message="Release 1.13",
+    )
+    assert os.readlink(release_repo / "current") == "1.13"
+    entry = Manifest.load(release_repo / "versions.json").get("1.13")
+    assert entry is not None
+    assert entry.url == "https://mne.tools/stable/"
+    assert git(release_repo, "log", "-1", "--format=%s") == "Release 1.13"

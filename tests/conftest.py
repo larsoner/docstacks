@@ -112,15 +112,28 @@ def html_dir(tmp_path: Path) -> Path:
     return build
 
 
-@pytest.fixture
-def site_repo(tmp_path: Path) -> Path:
-    """A git checkout of a deployed site, with content docstacks must not touch."""
-    repo = tmp_path / "site-repo"
-    repo.mkdir()
+def add_commits(repo: Path, count: int) -> None:
+    """Append ``count`` commits whose messages carry a trailer paragraph."""
+    for index in range(count):
+        (repo / f"note-{index}.txt").write_text(f"{index}\n", encoding="utf-8")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-m", f"Note {index}\n\nDeployed-version: 0.{index}")
+
+
+def init_repo(repo: Path) -> None:
+    """Create an empty repository with an identity commits can be made under."""
+    repo.mkdir(parents=True, exist_ok=True)
     git(repo, "init", "-b", "main")
     git(repo, "config", "user.email", "docs@example.com")
     git(repo, "config", "user.name", "Docs Bot")
     git(repo, "config", "commit.gpgsign", "false")
+
+
+@pytest.fixture
+def site_repo(tmp_path: Path) -> Path:
+    """A git checkout of a deployed site, with content docstacks must not touch."""
+    repo = tmp_path / "site-repo"
+    init_repo(repo)
     (repo / "CNAME").write_text("mne.tools\n", encoding="utf-8")
     (repo / ".nojekyll").touch()
     (repo / "index.html").write_text("<html>landing</html>", encoding="utf-8")
@@ -132,6 +145,25 @@ def site_repo(tmp_path: Path) -> Path:
         )
     (repo / "1.11" / "style.css").write_text("body {}\n", encoding="utf-8")
     os.symlink("1.11", repo / "stable", target_is_directory=True)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "Seed the site")
+    return repo
+
+
+@pytest.fixture
+def release_repo(tmp_path: Path) -> Path:
+    """A site on the eve of a release: 1.12 is stable, 1.13 is about to land."""
+    repo = tmp_path / "release-repo"
+    init_repo(repo)
+    (repo / "CNAME").write_text("mne.tools\n", encoding="utf-8")
+    (repo / "index.html").write_text("<html>landing</html>", encoding="utf-8")
+    (repo / "versions.json").write_text(MNE_MANIFEST, encoding="utf-8")
+    for name in ("dev", "1.12", "1.11"):
+        (repo / name).mkdir()
+        (repo / name / "index.html").write_text(
+            f"<html>{name}</html>", encoding="utf-8"
+        )
+    os.symlink("1.12", repo / "stable", target_is_directory=True)
     git(repo, "add", "-A")
     git(repo, "commit", "-m", "Seed the site")
     return repo

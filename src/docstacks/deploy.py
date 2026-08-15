@@ -5,6 +5,10 @@ producing -- typically a shallow, sparse clone made by a CI job. Everything at
 its root that ``docstacks`` does not own (``CNAME``, ``.nojekyll``, a landing
 ``index.html``, foreign version directories, aliases it was not asked about)
 survives a deploy untouched; that invariant is the whole point of the module.
+
+:func:`deploy` writes what it is told and nothing more. :func:`promote` is the
+release-day variant that also demotes whatever the new alias just took over, so
+the manifest never claims that ``/stable/`` serves a version it no longer does.
 """
 
 from __future__ import annotations
@@ -15,16 +19,20 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from docstacks import _git
-from docstacks.manifest import Manifest
+from docstacks._repo import (
+    DeployError,
+    check_component,
+    check_repo,
+    commit,
+    stage,
+)
+from docstacks._repo import push as push_branch
+from docstacks.manifest import Entry, Manifest
 from docstacks.tree import PREFERRED_ALIAS, VERSION_RE, _pick_alias, version_key
 
-__all__ = ["DeployError", "deploy"]
+__all__ = ["DeployError", "deploy", "promote"]
 
 DEFAULT_MANIFEST = "versions.json"
-
-
-class DeployError(RuntimeError):
-    """A deploy was refused, or could not be completed."""
 
 
 def deploy(
@@ -75,58 +83,150 @@ def deploy(
     message : str | None
         Commit subject. Defaults to ``"Deploy <version> docs"``.
     push : bool
-        Whether to run ``git push origin HEAD`` afterwards. Configuring the
-        remote and its credentials is the caller's job.
+        Whether to push the current branch to ``origin`` afterwards. Configuring
+        the remote and its credentials is the caller's job.
 
     Returns
     -------
     sha : str
         Full SHA of the commit that was created.
     """
-    html_dir = Path(html_dir)
-    repo_dir = Path(repo_dir)
-    aliases = tuple(aliases)
+    return _deploy(
+        html_dir,
+        version,
+        repo_dir,
+        aliases=aliases,
+        base_url=base_url,
+        name=name,
+        manifest_path=manifest_path,
+        source_sha=source_sha,
+        subject=message or f"Deploy {version} docs",
+        push=push,
+        demote=False,
+    )
 
-    _check_inputs(html_dir, version, repo_dir, aliases, manifest_path)
 
-    target = repo_dir / version
+def promote(
+    html_dir: str | os.PathLike[str],
+    version: str,
+    repo_dir: str | os.PathLike[str],
+    *,
+    aliases: Sequence[str] = (PREFERRED_ALIAS,),
+    base_url: str | None = None,
+    name: str | None = None,
+    manifest_path: str | None = DEFAULT_MANIFEST,
+    source_sha: str | None = None,
+    message: str | None = None,
+    push: bool = False,
+) -> str:
+    """Deploy a version, alias it, and demote its predecessor, in one commit.
+
+    Everything :func:`deploy` does, plus: any *other* entry that was preferred,
+    or whose URL pointed at one of the aliases being retargeted, is rewritten to
+    point at its own version directory. Its display name is cleared when it was
+    the generated ``"<version> (<alias>)"`` label -- which would otherwise go on
+    claiming a status it no longer has -- and kept when someone chose it by hand.
+
+    Doing this in the same commit as the content is what makes release day
+    atomic: there is no intermediate state in which ``/stable/`` serves the new
+    version while the manifest still advertises it as the old one.
+
+    Parameters
+    ----------
+    html_dir : path-like
+        Directory of already-built HTML.
+    version : str
+        Version being promoted.
+    repo_dir : path-like
+        Checkout of the site repository. Must be a clean git working tree.
+    aliases : sequence of str
+        Aliases to point at ``version``, defaulting to ``("stable",)``.
+    base_url : str | None
+        Absolute URL the site is served from, also used for the demoted URLs.
+    name : str | None
+        Display label for the promoted entry.
+    manifest_path : str | None
+        Manifest to update, relative to ``repo_dir``.
+    source_sha : str | None
+        Revision that produced ``html_dir``, recorded as a trailer.
+    message : str | None
+        Commit subject. Defaults to ``"Promote <version> to stable"``.
+    push : bool
+        Whether to push the current branch to ``origin`` afterwards.
+
+    Returns
+    -------
+    sha : str
+        Full SHA of the commit that was created.
+    """
+    return _deploy(
+        html_dir,
+        version,
+        repo_dir,
+        aliases=aliases,
+        base_url=base_url,
+        name=name,
+        manifest_path=manifest_path,
+        source_sha=source_sha,
+        subject=message or f"Promote {version} to stable",
+        push=push,
+        demote=True,
+    )
+
+
+def _deploy(
+    html_dir: str | os.PathLike[str],
+    version: str,
+    repo_dir: str | os.PathLike[str],
+    *,
+    aliases: Sequence[str],
+    base_url: str | None,
+    name: str | None,
+    manifest_path: str | None,
+    source_sha: str | None,
+    subject: str,
+    push: bool,
+    demote: bool,
+) -> str:
+    html_path = Path(html_dir)
+    repo_path = Path(repo_dir)
+    alias_names = tuple(aliases)
+
+    _check_inputs(html_path, version, repo_path, alias_names, manifest_path, push)
+
+    target = repo_path / version
     if target.is_dir() and not target.is_symlink():
         shutil.rmtree(target)
     elif os.path.lexists(target):
         target.unlink()
-    shutil.copytree(html_dir, target, symlinks=True)
+    shutil.copytree(html_path, target, symlinks=True)
 
-    for alias in aliases:
-        link = repo_dir / alias
+    for alias in alias_names:
+        link = repo_path / alias
         if link.is_symlink():
             link.unlink()
         os.symlink(version, link, target_is_directory=True)
 
+    staged = [version, *alias_names]
     if manifest_path is not None:
-        full = repo_dir / manifest_path
+        full = repo_path / manifest_path
         manifest = Manifest.load(full) if full.is_file() else Manifest()
-        _update_manifest(manifest, version, aliases, base_url, name)
+        _update_manifest(manifest, version, alias_names, base_url, name, demote)
         manifest.dump(full)
-
-    staged = [version, *aliases]
-    if manifest_path is not None:
         staged.append(manifest_path)
-    _git.git(repo_dir, "add", "-A", "--", *staged)
-    if not _git.has_staged_changes(repo_dir):
+
+    stage(repo_path, staged)
+    if not _git.has_staged_changes(repo_path):
         raise DeployError(
-            f"nothing to deploy: {version} in {repo_dir} already matches {html_dir}"
+            f"nothing to deploy: {version} in {repo_path} already matches {html_path}"
         )
 
     trailers = f"Deployed-version: {version}"
     if source_sha is not None:
         trailers += f"\nSource-sha: {source_sha}"
-    _git.git(
-        repo_dir, "commit", "-m", message or f"Deploy {version} docs", "-m", trailers
-    )
-    sha = _git.git(repo_dir, "rev-parse", "HEAD")
-
+    sha = commit(repo_path, subject, trailers)
     if push:
-        _git.git(repo_dir, "push", "origin", "HEAD")
+        push_branch(repo_path)
     return sha
 
 
@@ -136,9 +236,10 @@ def _check_inputs(
     repo_dir: Path,
     aliases: Sequence[str],
     manifest_path: str | None,
+    pushing: bool,
 ) -> None:
     """Refuse everything refusable before touching the repository."""
-    _check_component(version, "version")
+    check_component(version, "version")
     if not html_dir.is_dir():
         raise DeployError(f"{html_dir} is not a directory")
     if not (html_dir / "index.html").is_file():
@@ -150,18 +251,10 @@ def _check_inputs(
             f"manifest_path {manifest_path!r} must be relative to repo_dir"
         )
 
-    if not repo_dir.is_dir():
-        raise DeployError(f"{repo_dir} is not a directory")
-    if not _git.is_worktree(repo_dir):
-        raise DeployError(f"{repo_dir} is not a git working tree")
-    status = _git.git(repo_dir, "status", "--porcelain")
-    if status:
-        raise DeployError(
-            f"{repo_dir} has uncommitted changes, refusing to deploy:\n{status}"
-        )
+    check_repo(repo_dir, push=pushing)
 
     for alias in aliases:
-        _check_component(alias, "alias")
+        check_component(alias, "alias")
         if alias == version:
             raise DeployError(f"alias {alias!r} is the same as the version")
         link = repo_dir / alias
@@ -172,33 +265,23 @@ def _check_inputs(
             )
 
 
-def _check_component(value: str, what: str) -> None:
-    if not value or value in (os.curdir, os.pardir) or {"/", "\\"} & set(value):
-        raise DeployError(f"invalid {what} {value!r}: must be a single path component")
-
-
 def _update_manifest(
     manifest: Manifest,
     version: str,
     aliases: Sequence[str],
     base_url: str | None,
     name: str | None,
+    demote: bool,
 ) -> None:
     """Insert or refresh the entry for ``version``, keeping the file's order."""
+    base = _resolve_base_url(manifest, version, base_url)
+    outgoing = _outgoing(manifest, version, aliases, base) if demote else []
+
     entry = manifest.get(version)
     alias = _pick_alias(list(aliases))
-    if base_url is None:
-        if entry is None:
-            raise DeployError(
-                f"base_url is required to add a manifest entry for {version!r}"
-            )
-        base_url = _base_of(entry.url)
-    if not base_url.endswith("/"):
-        base_url += "/"
-    url = base_url + (alias or version) + "/"
+    url = base + (alias or version) + "/"
     if name is None and alias is not None:
         name = f"{version} ({alias})"
-
     if entry is None:
         manifest.add(version, url, name, position=_insert_position(manifest, version))
     else:
@@ -207,6 +290,35 @@ def _update_manifest(
             entry.name = name
     if PREFERRED_ALIAS in aliases:
         manifest.set_preferred(version)
+
+    for stale in outgoing:
+        if stale.name in {f"{stale.version} ({alias})" for alias in aliases}:
+            stale.name = None
+        stale.url = base + stale.version + "/"
+
+
+def _resolve_base_url(manifest: Manifest, version: str, base_url: str | None) -> str:
+    """The site root, from the caller or from the URL already on record."""
+    if base_url is None:
+        entry = manifest.get(version)
+        if entry is None:
+            raise DeployError(
+                f"base_url is required to add a manifest entry for {version!r}"
+            )
+        base_url = _base_of(entry.url)
+    return base_url if base_url.endswith("/") else base_url + "/"
+
+
+def _outgoing(
+    manifest: Manifest, version: str, aliases: Sequence[str], base_url: str
+) -> list[Entry]:
+    """Entries the incoming version is about to take an alias away from."""
+    alias_urls = {base_url + alias + "/" for alias in aliases}
+    return [
+        entry
+        for entry in manifest
+        if entry.version != version and (entry.preferred or entry.url in alias_urls)
+    ]
 
 
 def _base_of(url: str) -> str:
