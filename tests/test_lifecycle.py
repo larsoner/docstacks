@@ -93,6 +93,53 @@ def test_delete_untracked_by_the_manifest(site_repo: Path) -> None:
     assert (site_repo / "versions.json").read_bytes() == before
 
 
+def test_delete_manifest_only_entry(release_repo: Path) -> None:
+    """An entry whose directory was never deployed is removed without a pathspec.
+
+    Staging ``0.9`` here would hand git a pathspec matching nothing, which used
+    to abort the command after the manifest had already been rewritten.
+    """
+    path = release_repo / "versions.json"
+    Manifest.load(path).add("0.9", "https://mne.tools/0.9/").dump(path)
+    git(release_repo, "commit", "-am", "List a version that was never deployed")
+
+    sha = delete("0.9", release_repo)
+
+    assert Manifest.load(path).get("0.9") is None
+    assert [entry.version for entry in Manifest.load(path)] == [
+        "dev",
+        "1.12",
+        "1.11",
+        "legacy",
+    ]
+    body = git(release_repo, "log", "-1", "--format=%B", sha)
+    assert body.splitlines() == ["Delete 0.9 docs", "", "Deleted-version: 0.9"]
+    assert git(release_repo, "status", "--porcelain") == ""
+
+
+def test_delete_refuses_an_untracked_directory(release_repo: Path) -> None:
+    """A directory git ignores is not ours to remove, and nothing is touched.
+
+    An ignored path leaves the working tree looking clean, so the clean-tree
+    guard cannot catch it; refusing on "git tracks nothing here" is what keeps
+    the operation from destroying an unmanaged directory it could not record.
+    """
+    (release_repo / ".gitignore").write_text("0.9/\n", encoding="utf-8")
+    (release_repo / "0.9").mkdir()
+    (release_repo / "0.9" / "index.html").write_text(
+        "<html>0.9</html>", encoding="utf-8"
+    )
+    git(release_repo, "add", "-A")
+    git(release_repo, "commit", "-m", "Ignore 0.9")
+    assert git(release_repo, "status", "--porcelain") == ""
+
+    with pytest.raises(DeployError, match="nothing to delete"):
+        delete("0.9", release_repo)
+
+    assert (release_repo / "0.9" / "index.html").is_file()
+    assert git(release_repo, "status", "--porcelain") == ""
+
+
 def test_delete_symlinked_version(site_repo: Path) -> None:
     """Deleting a version that is itself a symlink unlinks rather than recurses."""
     os.symlink("1.11", site_repo / "1.10", target_is_directory=True)

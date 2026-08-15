@@ -125,6 +125,11 @@ def delete(
     the site serving a dangling alias or advertising a version that is gone, so
     the caller has to promote a replacement first.
 
+    Either half may be missing: a manifest entry with no directory on disk, or a
+    tracked directory the manifest never listed, is removed on its own. Staging
+    follows what git tracks rather than what is on disk, so a manifest-only
+    entry does not send git a pathspec it cannot match.
+
     Parameters
     ----------
     version : str
@@ -151,8 +156,13 @@ def delete(
     full = repo_path / manifest_path
     manifest = Manifest.load(full) if full.is_file() else Manifest()
     entry = manifest.get(version)
-    if not os.path.lexists(target) and entry is None:
-        raise DeployError(f"nothing to delete: {repo_path} has no {version!r}")
+    deployed = os.path.lexists(target)
+    tracked = bool(_git.git(repo_path, "ls-files", "--", version))
+    if not tracked and entry is None:
+        raise DeployError(
+            f"nothing to delete: {repo_path} tracks no {version!r} and "
+            f"{manifest_path} has no entry for it"
+        )
     if entry is not None and entry.preferred:
         raise DeployError(
             f"{version!r} is the preferred version; promote another version first"
@@ -166,9 +176,9 @@ def delete(
 
     if target.is_dir() and not target.is_symlink():
         shutil.rmtree(target)
-    elif os.path.lexists(target):
+    elif deployed:
         target.unlink()
-    staged = [version]
+    staged = [version] if tracked else []
     if entry is not None:
         manifest.remove(version)
         manifest.dump(full)
