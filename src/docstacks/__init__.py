@@ -5,7 +5,8 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
 
-from docstacks.deploy import DeployError, deploy
+from docstacks.deploy import DeployError, deploy, promote
+from docstacks.lifecycle import PruneResult, delete, prune, retitle
 from docstacks.manifest import Entry, Manifest
 from docstacks.tree import scan_tree
 
@@ -18,7 +19,12 @@ __all__ = [
     "DeployError",
     "Entry",
     "Manifest",
+    "PruneResult",
     "__version__",
+    "delete",
     "deploy",
+    "promote",
+    "prune",
+    "retitle",
     "scan_tree",
 ]
