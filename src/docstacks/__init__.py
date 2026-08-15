@@ -5,6 +5,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
 
+from docstacks.deploy import DeployError, deploy
 from docstacks.manifest import Entry, Manifest
 from docstacks.tree import scan_tree
 
@@ -13,4 +14,11 @@ try:
 except PackageNotFoundError:  # pragma: no cover - source checkout without install
     __version__ = "0.0.0+unknown"
 
-__all__ = ["Entry", "Manifest", "__version__", "scan_tree"]
+__all__ = [
+    "DeployError",
+    "Entry",
+    "Manifest",
+    "__version__",
+    "deploy",
+    "scan_tree",
+]

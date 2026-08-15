@@ -3,9 +3,33 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
+
+#: Manifest of the seeded site repository: stable still points at 1.11, and the
+#: legacy catch-all sits below the numbered entries where inserts must not go.
+SITE_MANIFEST = """\
+[
+  {
+    "name": "1.12 (dev)",
+    "version": "dev",
+    "url": "https://mne.tools/dev/"
+  },
+  {
+    "name": "1.11 (stable)",
+    "version": "1.11",
+    "url": "https://mne.tools/stable/",
+    "preferred": true
+  },
+  {
+    "name": "≤ 0.20 (legacy)",
+    "version": "legacy",
+    "url": "https://mne.tools/dev/old_versions/"
+  }
+]
+"""
 
 #: Shaped after MNE-Python's real versions.json: a dev entry, a stable entry
 #: served from the alias URL, an archived release, a hand-added foreign
@@ -68,6 +92,60 @@ def mne_manifest_path(tmp_path: Path) -> Path:
     path = tmp_path / "versions.json"
     path.write_text(MNE_MANIFEST, encoding="utf-8")
     return path
+
+
+def git(repo: Path, *args: str) -> str:
+    """Run git in ``repo``, failing the test if it errors."""
+    process = subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+    )
+    return process.stdout.strip()
+
+
+@pytest.fixture
+def html_dir(tmp_path: Path) -> Path:
+    """A freshly built HTML tree, as sphinx would leave it."""
+    build = tmp_path / "build" / "html"
+    (build / "_static").mkdir(parents=True)
+    (build / "index.html").write_text("<html>1.12</html>", encoding="utf-8")
+    (build / "_static" / "app.js").write_text("// 1.12\n", encoding="utf-8")
+    return build
+
+
+@pytest.fixture
+def site_repo(tmp_path: Path) -> Path:
+    """A git checkout of a deployed site, with content docstacks must not touch."""
+    repo = tmp_path / "site-repo"
+    repo.mkdir()
+    git(repo, "init", "-b", "main")
+    git(repo, "config", "user.email", "docs@example.com")
+    git(repo, "config", "user.name", "Docs Bot")
+    git(repo, "config", "commit.gpgsign", "false")
+    (repo / "CNAME").write_text("mne.tools\n", encoding="utf-8")
+    (repo / ".nojekyll").touch()
+    (repo / "index.html").write_text("<html>landing</html>", encoding="utf-8")
+    (repo / "versions.json").write_text(SITE_MANIFEST, encoding="utf-8")
+    for name, body in (("1.11", "1.11"), ("dev", "dev"), ("latest", "latest")):
+        (repo / name).mkdir()
+        (repo / name / "index.html").write_text(
+            f"<html>{body}</html>", encoding="utf-8"
+        )
+    (repo / "1.11" / "style.css").write_text("body {}\n", encoding="utf-8")
+    os.symlink("1.11", repo / "stable", target_is_directory=True)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "Seed the site")
+    return repo
+
+
+@pytest.fixture
+def bare_remote(tmp_path: Path, site_repo: Path) -> Path:
+    """A local bare repository wired up as ``origin`` of ``site_repo``."""
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    git(remote, "init", "--bare", "-b", "main")
+    git(site_repo, "remote", "add", "origin", str(remote))
+    git(site_repo, "push", "origin", "main")
+    return remote
 
 
 @pytest.fixture
