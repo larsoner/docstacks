@@ -46,6 +46,16 @@ def test_indent_sniffing(text: str, indent: int | str) -> None:
     assert Manifest().indent == 2
 
 
+def test_container_protocol(mne_manifest_text: str) -> None:
+    """A manifest is sized, iterable, comparable, and legible in a traceback."""
+    manifest = Manifest.loads(mne_manifest_text)
+    assert len(manifest) == 4
+    assert repr(manifest) == "<Manifest ['dev', '1.12', '1.11', 'legacy']>"
+    assert manifest == Manifest.loads(mne_manifest_text)
+    assert manifest != Manifest()
+    assert manifest != manifest.entries
+
+
 def test_serialization_omits_defaults() -> None:
     """``name`` and a false ``preferred`` are left out, extras come last."""
     entry = Entry(version="1.11", url="https://x/1.11/", extra={"z": 1, "a": 2})
