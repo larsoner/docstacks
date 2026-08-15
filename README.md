@@ -15,18 +15,35 @@ Think of it as **mike for Sphinx**: [mike](https://github.com/jimporter/mike) ow
 
 ## What works today
 
-Deploy a build into a checkout of your GitHub Pages repo, alias it, update the manifest, and commit — all in one transaction:
+Release day, as one atomic commit:
 
 ```bash
-docstacks deploy doc/_build/html 1.13 \
+docstacks promote doc/_build/html 1.13 \
     --repo ~/mne-tools.github.io \
-    --alias stable \
     --base-url https://mne.tools/ \
     --source-sha $GIT_SHA \
     --push
 ```
 
-That copies the build to `1.13/`, points the `stable` symlink at it, rewrites `versions.json`, and commits with `Deployed-version:` and `Source-sha:` trailers. Everything else at the site root — `CNAME`, `.nojekyll`, your landing page, other versions — is left exactly as it was. Making the checkout is your job (a shallow sparse clone is the usual choice); `docstacks` refuses to touch anything but a clean working tree.
+That copies the build to `1.13/`, repoints the `stable` symlink at it, marks it preferred in `versions.json`, **and demotes 1.12 in the same commit** — sending its entry back to `https://mne.tools/1.12/` so the manifest stops claiming it is what `/stable/` serves. Everything else at the site root — `CNAME`, `.nojekyll`, your landing page, other versions — is left exactly as it was.
+
+Nightly dev docs are the same shape without the alias juggling:
+
+```bash
+docstacks deploy doc/_build/html dev --repo ~/mne-tools.github.io --push
+```
+
+Making the checkout is your job (a shallow sparse clone is the usual choice); `docstacks` refuses to touch anything but a clean working tree, and refuses to push from a detached `HEAD`.
+
+The rest of the lifecycle:
+
+```bash
+docstacks retitle 1.11 "1.11 (archived)" --repo ~/mne-tools.github.io
+docstacks delete 0.24 --repo ~/mne-tools.github.io
+docstacks prune --repo ~/mne-tools.github.io --keep 20   # collapse older history
+```
+
+`prune` keeps the most recent commits intact and squashes everything older into one root, so the repo stops growing without invalidating recent shallow clones. It rewrites history, so it warns loudly and only force-pushes when you ask.
 
 The manifest tools stand alone too:
 
@@ -38,7 +55,7 @@ docstacks list versions.json
 
 `docstacks.manifest` round-trips `versions.json` byte-stably, preserving entry order, indentation, unknown keys, and hand-added foreign entries (legacy catch-alls and the like). `docstacks.tree.scan_tree` derives a manifest from a deployed site directory, resolving alias symlink chains such as `stable -> 2.1 -> 2.1.3`.
 
-`promote`, `prune`, `delete`, and `retitle` are not implemented yet. See [DESIGN.md](DESIGN.md) for the roadmap.
+See [DESIGN.md](DESIGN.md) for the reasoning behind all of it.
 
 ## Requirements
 

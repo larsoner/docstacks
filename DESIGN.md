@@ -65,20 +65,43 @@ docstacks deploy <html-dir> <version> --repo <checkout> [--alias stable]
 - `versions.json` at the repo root is updated **in the same commit** as the content. A commit that adds `1.12/` without listing it, or lists it without adding it, is a broken intermediate state that users can hit mid-deploy.
 - **Unmanaged root files are preserved**: `CNAME`, `.nojekyll`, `index.html`, `robots.txt`, `.github/` and anything else at the root that is not a version directory `docstacks` knows about. `docstacks` owns the version directories, the alias symlinks, and `versions.json`; everything else at the root is somebody else's and must round-trip untouched. Staging is therefore path-scoped (`git add -A -- <version> <aliases> versions.json`), never a blanket repo-wide add.
 - **Guards run before anything is written.** An empty build (no `index.html`), a dirty checkout, a bad version component, or an alias over a real directory all fail with the working tree exactly as it was found. Deploying byte-identical content twice is likewise refused rather than committed empty.
-- Aliases are **not remembered between deploys**. `deploy` writes what it is told and nothing more, so redeploying a version without repeating `--alias stable` moves its manifest URL back to the version directory. Alias *state* belongs to `promote` in milestone 3, which will reason about the site as a whole.
+- Aliases are **not remembered between deploys**. `deploy` writes what it is told and nothing more, so redeploying a version without repeating `--alias stable` moves its manifest URL back to the version directory. Alias *state* is `promote`'s concern, because it is the command that reasons about the site as a whole.
+- Pushing resolves the **branch by name** rather than pushing `HEAD`. CI checkouts are frequently detached, where `git push origin HEAD` fails; the check happens in the guard phase, so a deploy that could not be published is refused before it is committed.
 
-### Milestone 3 — lifecycle commands
+### Milestone 3 — lifecycle commands (done)
 
 ```
-docstacks promote <version>          # make it stable
-docstacks prune [--keep N | --policy ...]
-docstacks delete <version>
-docstacks retitle <version> <name>
+docstacks promote <html-dir> <version> --repo <checkout> [--alias stable]
+docstacks retitle <version> <name> --repo <checkout>
+docstacks delete <version> --repo <checkout>
+docstacks prune --repo <checkout> (--keep N | --keep-since REV)
 ```
 
-`prune` performs **retention-anchored history squashing**: history older than the retention anchor is collapsed, but the result is *not* a single orphan commit. Squashing everything to one commit is the obvious approach and it is wrong here — it invalidates every previously fetched shallow clone, forces every CI job to re-download the whole tree, and destroys the `Deployed-version:`/`Source-sha:` provenance for versions still on the site. Instead, commits within the retention window keep their identity and only the pre-anchor tail is collapsed.
+#### `promote`
 
-`delete` removes a version directory and its manifest entry (refusing if an alias still points at it); `retitle` changes only the manifest `name`, touching no content.
+Everything `deploy` does, plus the demotion of whatever the alias was taken from — in the *same* commit. Without it, release day leaves the manifest lying: `stable` now serves 1.13 while the 1.12 entry still advertises `https://mne.tools/stable/` as its own URL. So any other entry that was `preferred`, or whose URL pointed at an alias being retargeted, is sent back to `<base_url><its version>/`.
+
+The generated `"<version> (stable)"` label is cleared when it is demoted, since it would otherwise go on claiming a status the version no longer has, and the switcher falls back to displaying the bare version. A label someone chose by hand is kept: `docstacks` cannot tell what a human meant by "1.12 LTS", so it fixes only the URL, which it can verify.
+
+#### `delete` and `retitle`
+
+`delete` removes a version directory and its manifest entry, and is **refused while anything still points at the version**: a root symlink aliasing it (transitively — an alias chain counts), or a `preferred` flag on its entry. Deleting under either leaves the site serving a dangling alias or advertising a version that is gone, so the caller has to promote a replacement first. `retitle` changes only the manifest `name`, touching no content.
+
+Both carry their own trailer (`Deleted-version:`, `Retitled-version:`) so that every commit `docstacks` makes is attributable to a version and an operation without parsing the subject line.
+
+#### `prune`
+
+**Retention-anchored history squashing**: history older than the retention anchor is collapsed, but the result is *not* a single orphan commit. Squashing everything to one commit is the obvious approach and it is wrong here — it invalidates every previously fetched shallow clone, forces every CI job to re-download the whole tree, and destroys the `Deployed-version:`/`Source-sha:` provenance for versions still on the site. Instead, commits from the anchor to the tip keep their tree, message, author, and author date, and only the pre-anchor tail becomes one synthetic root.
+
+The rewrite is done with **`git commit-tree`, never a rebase or a cherry-pick**. A rebase replays *diffs*, which on a multi-gigabyte documentation tree means materializing and re-hashing every file in every commit — hours of work to reproduce content that already exists. `commit-tree` re-parents the tree objects git already has: the surviving commits point at byte-identical trees, so the operation is O(number of commits) and cannot alter content even in principle. Concretely:
+
+1. Resolve the anchor (`HEAD~(N-1)` for `--keep N`, or the given revision), and require it to be an ancestor of `HEAD`.
+2. If the anchor has no parent it is already the root — nothing to collapse, exit 0 saying so.
+3. Build the new root: `git commit-tree <tree of anchor^> -m "Squashed history (docstacks prune)"`. Its tree is the state of the site immediately before the retention window, so the first surviving commit's diff is still meaningful.
+4. Walk `git rev-list --reverse <anchor>^..HEAD` — which is inclusive of the anchor, the boundary that is easy to get wrong — re-creating each commit as `git commit-tree <its tree> -p <new parent> -m <its full message>` with `GIT_AUTHOR_NAME`/`EMAIL`/`DATE` restored from the original. The committer becomes whoever ran `prune`, which is accurate: they are the one who made these commit objects.
+5. `git update-ref refs/heads/<branch>` to the new tip and `git reset --hard` to resync the index.
+
+`--push` means `git push --force-with-lease`, and the command says loudly on stderr that history was rewritten. Without it, the exact push command is printed rather than run, because rewriting a published docs branch is not something to do by accident.
 
 ### Later — rsync backend
 

@@ -6,7 +6,7 @@ Guidance for AI coding agents working in this repository.
 
 `docstacks` manages the one-directory-per-version documentation layout that scientific Python projects publish to GitHub Pages: a site root holding `dev/`, `1.12/`, `1.11/`, a `stable` symlink, and a `versions.json` manifest read by the pydata-sphinx-theme version switcher.
 It is "mike for Sphinx" — it owns the deploy transaction, not the build.
-Today it has the manifest layer (`manifest.py`, `tree.py`) and the git deploy backend (`deploy.py` over `_git.py`), with a thin CLI over all of it; the `promote`/`prune`/`delete`/`retitle` lifecycle commands are still to come.
+It has the manifest layer (`manifest.py`, `tree.py`), the git backend (`deploy.py` and `lifecycle.py` over `_repo.py` and `_git.py`), and a thin CLI over all of it: `deploy`, `promote`, `retitle`, `delete`, `prune`, plus the standalone `validate`, `generate`, and `list`.
 Read [DESIGN.md](DESIGN.md) before adding anything structural — it records the roadmap, the switcher schema semantics, and the reasoning behind the constraints below.
 
 ## Dev setup
@@ -71,8 +71,16 @@ Assume the reader knows Python and has the diff in front of them.
 A comment earns its place by recording a constraint, an invariant, or a surprise — the pandas-style alias chain that `tree.py` has to resolve, for instance — and stays to one line.
 
 **No global state, and I/O stays where it is expected.**
-`manifest.py` touches the filesystem only in `load` and `dump`; `tree.py` reads a directory and nothing else; `deploy.py` is the one module that writes, and it does so only after every guard has passed.
+`manifest.py` touches the filesystem only in `load` and `dump`; `tree.py` reads a directory and nothing else; `deploy.py` and `lifecycle.py` are the modules that write, and they do so only after every guard has passed.
 
 **git is a tool dependency, not a package one.**
 All git access goes through `docstacks._git`, which shells out to the binary; do not reach for a git library, and do not call `subprocess` for git anywhere else.
-A deploy must never leave a half-written checkout: validate everything up front, then mutate, then stage path-by-path (`git add -A -- <paths>`) rather than with a repo-wide add.
+Guards, staging, committing, and pushing live in `docstacks._repo` and are shared by every command that writes — a new command reuses them rather than reimplementing the clean-tree or detached-`HEAD` checks.
+
+**Never leave a half-written checkout.**
+Validate everything up front, then mutate, then stage path-by-path (`git add -A -- <paths>`) rather than with a repo-wide add.
+Every command that touches a version commits with a trailer naming it (`Deployed-version:`, `Deleted-version:`, `Retitled-version:`), so any commit can be attributed to a version and an operation without parsing the subject line.
+
+**History rewriting uses plumbing, not porcelain.**
+`prune` re-parents existing tree objects with `git commit-tree`; a rebase or cherry-pick would replay diffs across gigabytes of HTML.
+Anything else that reshapes history should follow the same rule.
