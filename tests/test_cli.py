@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+from conftest import git
 from docstacks.cli import main
 from docstacks.manifest import Manifest
 
@@ -83,6 +85,65 @@ def test_list(mne_manifest_path: Path, capsys: pytest.CaptureFixture) -> None:
     assert lines[2].endswith("*")
     assert [line.split()[0] for line in lines[1:]] == ["dev", "1.12", "1.11", "legacy"]
     assert len({line.index("https://") for line in lines[1:]}) == 1
+
+
+def test_deploy(
+    html_dir: Path,
+    site_repo: Path,
+    bare_remote: Path,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """The happy path deploys, aliases, pushes, and reports the short SHA."""
+    assert (
+        main(
+            [
+                "deploy",
+                str(html_dir),
+                "1.12",
+                "--repo",
+                str(site_repo),
+                "--alias",
+                "stable",
+                "--base-url",
+                "https://mne.tools/",
+                "--source-sha",
+                "cafe1234",
+                "--push",
+            ]
+        )
+        == 0
+    )
+    sha = git(site_repo, "rev-parse", "HEAD")
+    out = capsys.readouterr().out
+    assert out.startswith(sha[:8])
+    assert "deployed 1.12" in out
+    assert "aliases: stable" in out
+    assert "pushed to origin" in out
+    assert os.readlink(site_repo / "stable") == "1.12"
+    assert git(bare_remote, "rev-parse", "main") == sha
+
+
+def test_deploy_no_manifest_in_cwd(
+    html_dir: Path, site_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--repo`` defaults to the working directory, and ``--no-manifest`` skips it."""
+    before = (site_repo / "versions.json").read_bytes()
+    monkeypatch.chdir(site_repo)
+    assert main(["deploy", str(html_dir), "1.12", "--no-manifest"]) == 0
+    assert (site_repo / "versions.json").read_bytes() == before
+    assert (site_repo / "1.12" / "index.html").is_file()
+
+
+def test_deploy_failure(
+    html_dir: Path, site_repo: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """A refused deploy exits nonzero with the reason on stderr."""
+    (site_repo / "CNAME").write_text("other.example\n", encoding="utf-8")
+    assert main(["deploy", str(html_dir), "1.12", "--repo", str(site_repo)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "error: " in captured.err
+    assert "uncommitted changes" in captured.err
 
 
 def test_version_flag(capsys: pytest.CaptureFixture) -> None:

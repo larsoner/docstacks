@@ -1,4 +1,4 @@
-"""Command-line interface, kept thin over :mod:`docstacks.manifest`."""
+"""Command-line interface, kept thin over the library modules."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import sys
 from collections.abc import Sequence
 
 from docstacks import __version__
+from docstacks._git import GitError
+from docstacks.deploy import DEFAULT_MANIFEST, DeployError, deploy
 from docstacks.manifest import Manifest
 from docstacks.tree import PREFERRED_ALIAS, scan_tree
 
@@ -49,6 +51,37 @@ def _build_parser() -> argparse.ArgumentParser:
     list_ = subparsers.add_parser("list", help="show the entries of a versions.json")
     list_.add_argument("manifest", help="path to versions.json")
     list_.set_defaults(func=_run_list)
+
+    deploy_ = subparsers.add_parser(
+        "deploy", help="deploy a built HTML tree into a site repository"
+    )
+    deploy_.add_argument("html_dir", help="directory of already-built HTML")
+    deploy_.add_argument("version", help="version identity and directory name")
+    deploy_.add_argument(
+        "--repo", default=".", help="checkout of the site repository (default: .)"
+    )
+    deploy_.add_argument(
+        "--alias",
+        action="append",
+        dest="aliases",
+        metavar="NAME",
+        help="symlink NAME at the site root to this version (repeatable)",
+    )
+    deploy_.add_argument("--base-url", help="absolute URL the site is served from")
+    deploy_.add_argument("--name", help="display label for the manifest entry")
+    deploy_.add_argument(
+        "--source-sha", help="revision that produced the HTML, recorded as a trailer"
+    )
+    deploy_.add_argument("--message", help="commit subject")
+    deploy_.add_argument(
+        "--push", action="store_true", help="push to origin afterwards"
+    )
+    deploy_.add_argument(
+        "--no-manifest",
+        action="store_true",
+        help="deploy content without touching versions.json",
+    )
+    deploy_.set_defaults(func=_run_deploy)
 
     return parser
 
@@ -93,6 +126,29 @@ def _run_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_deploy(args: argparse.Namespace) -> int:
+    aliases = tuple(args.aliases or ())
+    sha = deploy(
+        args.html_dir,
+        args.version,
+        args.repo,
+        aliases=aliases,
+        base_url=args.base_url,
+        name=args.name,
+        manifest_path=None if args.no_manifest else DEFAULT_MANIFEST,
+        source_sha=args.source_sha,
+        message=args.message,
+        push=args.push,
+    )
+    summary = f"{sha[:8]} deployed {args.version} from {args.html_dir}"
+    if aliases:
+        summary += f" (aliases: {', '.join(aliases)})"
+    if args.push:
+        summary += ", pushed to origin"
+    print(summary)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the ``docstacks`` command-line interface.
 
@@ -107,7 +163,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         Process exit status.
     """
     args = _build_parser().parse_args(argv)
-    return int(args.func(args))
+    try:
+        return int(args.func(args))
+    except (DeployError, GitError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":  # pragma: no cover
