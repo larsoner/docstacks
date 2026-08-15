@@ -22,9 +22,26 @@ docstacks generate ./site --base-url https://mne.tools/
 docstacks list versions.json
 ```
 
-`docstacks.manifest` round-trips `versions.json` byte-stably, preserving entry order, unknown keys, and hand-added foreign entries (legacy catch-alls and the like). `docstacks.tree.scan_tree` derives a manifest from a deployed site directory, resolving alias symlinks such as `stable -> 1.12`.
+`docstacks.manifest` round-trips `versions.json` byte-stably, preserving entry order, indentation, unknown keys, and hand-added foreign entries (legacy catch-alls and the like). `docstacks.tree.scan_tree` derives a manifest from a deployed site directory, resolving alias symlink chains such as `stable -> 2.1 -> 2.1.3`.
 
 Deploying is not implemented yet. See [DESIGN.md](DESIGN.md) for the roadmap.
+
+## Development
+
+```bash
+uv venv && uv pip install -e . --group dev   # or: pip install -e . --group dev
+prek install                                 # ruff, codespell, yamllint, toml-sort, zizmor
+```
+
+Three gates, all of which CI runs:
+
+```bash
+prek run -a
+ty check
+pytest --cov=docstacks --cov-report=term-missing
+```
+
+Runtime dependencies are deliberately empty and must stay that way; see [CLAUDE.md](CLAUDE.md) for the rest of the conventions.
 
 ## License
 

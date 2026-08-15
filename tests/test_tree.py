@@ -56,6 +56,7 @@ def test_scan_tree_non_stable_alias(site: Path) -> None:
     """A non-``stable`` alias supplies the URL but not the preferred flag."""
     os.symlink("1.11", site / "maint", target_is_directory=True)
     entry = scan_tree(site, "https://mne.tools/").get("1.11")
+    assert entry is not None
     assert entry.url == "https://mne.tools/maint/"
     assert entry.name == "1.11 (maint)"
     assert not entry.preferred
@@ -106,6 +107,7 @@ def test_scan_tree_absolute_symlink(tmp_path: Path) -> None:
     (site / "1.12").mkdir()
     os.symlink(str(site / "1.12"), site / "stable", target_is_directory=True)
     entry = scan_tree(site, "https://x/").get("1.12")
+    assert entry is not None
     assert entry.url == "https://x/stable/"
     assert entry.preferred
 

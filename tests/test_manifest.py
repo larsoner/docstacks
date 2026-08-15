@@ -13,8 +13,8 @@ def test_round_trip_is_byte_stable(mne_manifest_text: str, tmp_path: Path) -> No
     """Order, foreign entries, and unknown keys survive a round-trip."""
     manifest = Manifest.loads(mne_manifest_text)
     assert [entry.version for entry in manifest] == ["dev", "1.12", "1.11", "legacy"]
-    assert manifest.get("1.11").extra == {"internal": "keep me"}
-    assert manifest.get("legacy").name == "≤ 0.20 (legacy)"
+    assert manifest.entries[2].extra == {"internal": "keep me"}
+    assert manifest.entries[3].name == "≤ 0.20 (legacy)"
     assert manifest.dumps() == mne_manifest_text
 
     path = tmp_path / "out.json"
@@ -80,7 +80,9 @@ def test_mutations(mne_manifest_text: str) -> None:
         "1.11", "1.11 (old)"
     )
     assert [entry.version for entry in manifest][:3] == ["dev", "1.13", "1.12"]
-    assert manifest.get("1.11").name == "1.11 (old)"
+    renamed = manifest.get("1.11")
+    assert renamed is not None
+    assert renamed.name == "1.11 (old)"
 
     manifest.remove("1.13")
     assert manifest.get("1.13") is None
@@ -97,7 +99,7 @@ def test_mutations(mne_manifest_text: str) -> None:
 def test_set_preferred_clears_previous(mne_manifest_text: str) -> None:
     """Setting preferred moves the flag rather than adding a second one."""
     manifest = Manifest.loads(mne_manifest_text)
-    assert manifest.get("1.12").preferred
+    assert [entry.version for entry in manifest if entry.preferred] == ["1.12"]
     manifest.set_preferred("1.11")
     assert [entry.version for entry in manifest if entry.preferred] == ["1.11"]
     assert manifest.validate() == []
