@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import add_commits, git
+from conftest import add_commits, git, write_page
 from docstacks.cli import main
 from docstacks.manifest import Manifest
 
@@ -29,6 +29,68 @@ def test_validate_problems(tmp_path: Path, capsys: pytest.CaptureFixture) -> Non
     err = capsys.readouterr().err
     assert "does not end with '/'" in err
     assert "no entry is marked preferred" in err
+
+
+def test_validate_missing_file(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    """A manifest that is not there exits 1 with a message, not a traceback."""
+    assert main(["validate", str(tmp_path / "absent.json")]) == 1
+    assert "error: " in capsys.readouterr().err
+
+
+def test_validate_live(
+    www: Path, base_url: str, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """The switcher checks are opt-in, and catch what the schema cannot."""
+    write_page(www / "stable", "1.12")
+    write_page(www / "1.11", "1.11")
+    path = tmp_path / "versions.json"
+    manifest = Manifest()
+    manifest.add("stable", f"{base_url}stable/", preferred=True)
+    manifest.add("1.11", f"{base_url}1.11/")
+    manifest.dump(path)
+
+    assert main(["validate", str(path)]) == 0
+    assert capsys.readouterr().err == ""
+
+    assert main(["validate", str(path), "--check-urls", "--check-match"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith(f"{path}: ")
+    assert "version mismatch" in err
+    assert "'1.12'" in err and "'stable'" in err
+
+
+def test_validate_remote_manifest(www: Path, base_url: str) -> None:
+    """The manifest itself can be fetched from where it is served."""
+    Manifest().add("1.12", "https://mne.tools/1.12/", preferred=True).dump(
+        www / "versions.json"
+    )
+    assert main(["validate", f"{base_url}versions.json"]) == 0
+
+
+def test_validate_remote_timeout(
+    stalling_url: str, capsys: pytest.CaptureFixture
+) -> None:
+    """``--timeout`` reaches the fetch rather than being ignored."""
+    argv = ["validate", f"{stalling_url}versions.json", "--timeout", "0.25"]
+    assert main(argv) == 1
+    assert "cannot fetch" in capsys.readouterr().err
+
+
+def test_validate_site_dir(
+    site: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """``--site-dir`` cross-checks offline, honouring ``--dev-name``."""
+    path = tmp_path / "versions.json"
+    Manifest().add("1.12", "https://x/1.12/", preferred=True).dump(path)
+
+    assert main(["validate", str(path), "--site-dir", str(site)]) == 1
+    err = capsys.readouterr().err
+    assert "'dev' is deployed" in err
+    assert "'1.11' is deployed" in err
+
+    argv = ["validate", str(path), "--site-dir", str(site), "--dev-name", "main"]
+    assert main(argv) == 1
+    assert "'dev' is deployed" not in capsys.readouterr().err
 
 
 def test_generate_stdout(site: Path, capsys: pytest.CaptureFixture) -> None:

@@ -8,6 +8,13 @@ from collections.abc import Sequence
 
 from docstacks import __version__
 from docstacks._git import GitError
+from docstacks.check import (
+    DEFAULT_TIMEOUT,
+    CheckError,
+    check_live,
+    check_site_dir,
+    load_manifest,
+)
 from docstacks.deploy import DEFAULT_MANIFEST, DeployError, deploy, promote
 from docstacks.lifecycle import delete, prune, retitle
 from docstacks.manifest import Manifest
@@ -29,7 +36,29 @@ def _build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser(
         "validate", help="check a versions.json for problems"
     )
-    validate.add_argument("manifest", help="path to versions.json")
+    validate.add_argument("manifest", help="path or http(s) URL of a versions.json")
+    validate.add_argument(
+        "--check-urls",
+        action="store_true",
+        help="fetch every entry's URL and report unreachable or non-2xx pages",
+    )
+    validate.add_argument(
+        "--check-match",
+        action="store_true",
+        help="fetch every entry's page and compare its baked-in version_match "
+        "with the entry's version",
+    )
+    validate.add_argument(
+        "--site-dir", help="deployed site to cross-check the manifest against"
+    )
+    validate.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        metavar="SECONDS",
+        help=f"seconds to wait for each request (default: {DEFAULT_TIMEOUT:g})",
+    )
+    _add_dev_name_argument(validate)
     validate.set_defaults(func=_run_validate)
 
     generate = subparsers.add_parser(
@@ -39,13 +68,7 @@ def _build_parser() -> argparse.ArgumentParser:
     generate.add_argument(
         "--base-url", required=True, help="absolute URL the site is served from"
     )
-    generate.add_argument(
-        "--dev-name",
-        action="append",
-        dest="dev_names",
-        metavar="NAME",
-        help="directory name to treat as a development build (repeatable)",
-    )
+    _add_dev_name_argument(generate)
     generate.add_argument("-o", "--output", help="write to this file instead of stdout")
     generate.set_defaults(func=_run_generate)
 
@@ -101,6 +124,16 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_dev_name_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--dev-name",
+        action="append",
+        dest="dev_names",
+        metavar="NAME",
+        help="directory name to treat as a development build (repeatable)",
+    )
+
+
 def _add_repo_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--repo", default=".", help="checkout of the site repository (default: .)"
@@ -128,16 +161,29 @@ def _add_deploy_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _run_validate(args: argparse.Namespace) -> int:
-    problems = Manifest.load(args.manifest).validate()
+    manifest = load_manifest(args.manifest, timeout=args.timeout)
+    problems = manifest.validate()
+    if args.site_dir:
+        problems += check_site_dir(
+            manifest, args.site_dir, dev_versions=_dev_versions(args)
+        )
+    problems += check_live(
+        manifest,
+        urls=args.check_urls,
+        match=args.check_match,
+        timeout=args.timeout,
+    )
     for problem in problems:
         print(f"{args.manifest}: {problem}", file=sys.stderr)
     return 1 if problems else 0
 
 
+def _dev_versions(args: argparse.Namespace) -> tuple[str, ...]:
+    return tuple(args.dev_names or ("dev",))
+
+
 def _run_generate(args: argparse.Namespace) -> int:
-    manifest = scan_tree(
-        args.site_dir, args.base_url, dev_versions=tuple(args.dev_names or ("dev",))
-    )
+    manifest = scan_tree(args.site_dir, args.base_url, dev_versions=_dev_versions(args))
     if not any(entry.preferred for entry in manifest):
         print(
             f"warning: no '{PREFERRED_ALIAS}' symlink in {args.site_dir}, "
@@ -268,7 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
         return int(args.func(args))
-    except (DeployError, GitError) as exc:
+    except (CheckError, DeployError, GitError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
