@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import subprocess
+import threading
+import time
+from collections.abc import Iterator
+from http.server import (
+    BaseHTTPRequestHandler,
+    SimpleHTTPRequestHandler,
+    ThreadingHTTPServer,
+)
 from pathlib import Path
 
 import pytest
@@ -192,3 +201,85 @@ def site(tmp_path: Path) -> Path:
     (site_dir / ".nojekyll").touch()
     (site_dir / "index.html").write_text("<html></html>", encoding="utf-8")
     return site_dir
+
+
+#: Seconds the slow handler stalls for; only ever hit with a much smaller timeout.
+STALL_SECONDS = 30.0
+
+#: Page shape pydata-sphinx-theme produces, trimmed to what the check looks at.
+PAGE = """<!DOCTYPE html>
+<html><head><script id="documentation_options">
+const DOCUMENTATION_OPTIONS = {{}};
+DOCUMENTATION_OPTIONS.theme_switcher_version_match = '{match}';
+</script></head><body>docs</body></html>
+"""
+
+
+class QuietHandler(SimpleHTTPRequestHandler):
+    """Static file handler that records paths instead of logging them."""
+
+    #: Every path served since the last reset, for one-fetch-per-entry checks.
+    requests: list[str] = []
+
+    def do_GET(self) -> None:
+        QuietHandler.requests.append(self.path)
+        super().do_GET()
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+class StallingHandler(BaseHTTPRequestHandler):
+    """Handler that never answers within any sane timeout."""
+
+    def do_GET(self) -> None:
+        time.sleep(STALL_SECONDS)
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+def _serve(server: ThreadingHTTPServer) -> Iterator[str]:
+    # serve_forever's default half-second poll would dominate the suite's runtime
+    loop = functools.partial(server.serve_forever, poll_interval=0.01)
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def write_page(path: Path, match: str | None) -> None:
+    """Write an index.html, with or without a baked-in switcher identity."""
+    path.mkdir(parents=True, exist_ok=True)
+    body = (
+        "<html><body>docs</body></html>\n"
+        if match is None
+        else PAGE.format(match=match)
+    )
+    (path / "index.html").write_text(body, encoding="utf-8")
+
+
+@pytest.fixture
+def www(tmp_path: Path) -> Path:
+    """Document root of the local test server."""
+    root = tmp_path / "www"
+    root.mkdir()
+    return root
+
+
+@pytest.fixture
+def base_url(www: Path) -> Iterator[str]:
+    """Serve :func:`www` over localhost for the duration of a test."""
+    QuietHandler.requests.clear()
+    handler = functools.partial(QuietHandler, directory=str(www))
+    yield from _serve(ThreadingHTTPServer(("127.0.0.1", 0), handler))
+
+
+@pytest.fixture
+def stalling_url() -> Iterator[str]:
+    """A server that accepts connections and then never replies."""
+    yield from _serve(ThreadingHTTPServer(("127.0.0.1", 0), StallingHandler))
