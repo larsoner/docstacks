@@ -8,7 +8,7 @@ from collections.abc import Sequence
 
 from docstacks import __version__
 from docstacks.manifest import Manifest
-from docstacks.tree import scan_tree
+from docstacks.tree import PREFERRED_ALIAS, scan_tree
 
 __all__ = ["main"]
 
@@ -64,6 +64,12 @@ def _run_generate(args: argparse.Namespace) -> int:
     manifest = scan_tree(
         args.site_dir, args.base_url, dev_versions=tuple(args.dev_names or ("dev",))
     )
+    if not any(entry.preferred for entry in manifest):
+        print(
+            f"warning: no '{PREFERRED_ALIAS}' symlink in {args.site_dir}, "
+            "so no version is marked preferred",
+            file=sys.stderr,
+        )
     if args.output:
         manifest.dump(args.output)
     else:

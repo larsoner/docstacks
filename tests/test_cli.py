@@ -32,7 +32,9 @@ def test_validate_problems(tmp_path: Path, capsys: pytest.CaptureFixture) -> Non
 def test_generate_stdout(site: Path, capsys: pytest.CaptureFixture) -> None:
     """``generate`` writes a manifest to stdout by default."""
     assert main(["generate", str(site), "--base-url", "https://mne.tools/"]) == 0
-    manifest = Manifest.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    manifest = Manifest.loads(captured.out)
     assert [entry.version for entry in manifest][:2] == ["dev", "1.12"]
     assert manifest.validate() == []
 
@@ -59,6 +61,17 @@ def test_generate_output_file(site: Path, tmp_path: Path) -> None:
     data = json.loads(out.read_text(encoding="utf-8"))
     assert data[0]["version"] == "main"
     assert "dev" not in [entry["version"] for entry in data]
+
+
+def test_generate_warns_without_stable(
+    site: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """A site with no ``stable`` symlink still succeeds, but says so on stderr."""
+    (site / "stable").unlink()
+    assert main(["generate", str(site), "--base-url", "https://mne.tools/"]) == 0
+    captured = capsys.readouterr()
+    assert "warning: no 'stable' symlink" in captured.err
+    assert Manifest.loads(captured.out).validate() == ["no entry is marked preferred"]
 
 
 def test_list(mne_manifest_path: Path, capsys: pytest.CaptureFixture) -> None:
