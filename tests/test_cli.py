@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import git
+from conftest import add_commits, git
 from docstacks.cli import main
 from docstacks.manifest import Manifest
 
@@ -144,6 +144,96 @@ def test_deploy_failure(
     assert captured.out == ""
     assert "error: " in captured.err
     assert "uncommitted changes" in captured.err
+
+
+def test_promote(
+    html_dir: Path, release_repo: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """``promote`` defaults to the stable alias and demotes the incumbent."""
+    assert (
+        main(
+            [
+                "promote",
+                str(html_dir),
+                "1.13",
+                "--repo",
+                str(release_repo),
+                "--base-url",
+                "https://mne.tools/",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "promoted 1.13" in out
+    assert "aliases: stable" in out
+    assert os.readlink(release_repo / "stable") == "1.13"
+    manifest = Manifest.load(release_repo / "versions.json")
+    demoted = manifest.get("1.12")
+    assert demoted is not None
+    assert (demoted.name, demoted.url) == (None, "https://mne.tools/1.12/")
+
+
+def test_retitle_and_delete(release_repo: Path, capsys: pytest.CaptureFixture) -> None:
+    """The manifest-only lifecycle commands report the commit they made."""
+    assert (
+        main(["retitle", "1.11", "1.11 (archived)", "--repo", str(release_repo)]) == 0
+    )
+    assert "named '1.11 (archived)'" in capsys.readouterr().out
+
+    assert main(["retitle", "1.11", "", "--repo", str(release_repo)]) == 0
+    assert "cleared the name of 1.11" in capsys.readouterr().out
+
+    assert main(["delete", "1.11", "--repo", str(release_repo)]) == 0
+    assert "deleted 1.11" in capsys.readouterr().out
+    assert not (release_repo / "1.11").exists()
+
+    assert main(["delete", "1.12", "--repo", str(release_repo)]) == 1
+    assert "is the preferred version" in capsys.readouterr().err
+
+
+def test_prune(site_repo: Path, capsys: pytest.CaptureFixture) -> None:
+    """A rewrite is summarized on stdout and warned about on stderr."""
+    add_commits(site_repo, 5)
+    assert main(["prune", "--repo", str(site_repo), "--keep", "2"]) == 0
+
+    captured = capsys.readouterr()
+    assert "4 commits squashed into a new root, 2 preserved" in captured.out
+    assert "WARNING: history was rewritten" in captured.err
+    assert "git push --force-with-lease origin main" in captured.err
+    assert int(git(site_repo, "rev-list", "--count", "HEAD")) == 3
+
+
+def test_prune_push(
+    site_repo: Path, bare_remote: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """``--push`` force-pushes and says so instead of printing the command."""
+    add_commits(site_repo, 5)
+    assert (
+        main(["prune", "--repo", str(site_repo), "--keep-since", "HEAD~1", "--push"])
+        == 0
+    )
+
+    captured = capsys.readouterr()
+    assert "force-pushed to origin" in captured.err
+    assert "git push --force-with-lease" not in captured.err
+    assert git(bare_remote, "rev-parse", "main") == git(site_repo, "rev-parse", "HEAD")
+
+
+def test_prune_no_op(site_repo: Path, capsys: pytest.CaptureFixture) -> None:
+    """Nothing to collapse is a quiet success."""
+    assert main(["prune", "--repo", str(site_repo), "--keep", "1"]) == 0
+    captured = capsys.readouterr()
+    assert "nothing to prune" in captured.out
+    assert captured.err == ""
+
+
+def test_prune_requires_an_anchor(site_repo: Path) -> None:
+    """``--keep`` and ``--keep-since`` are mutually exclusive and one is required."""
+    for argv in ([], ["--keep", "2", "--keep-since", "HEAD"]):
+        with pytest.raises(SystemExit) as excinfo:
+            main(["prune", "--repo", str(site_repo), *argv])
+        assert excinfo.value.code == 2
 
 
 def test_version_flag(capsys: pytest.CaptureFixture) -> None:
