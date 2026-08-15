@@ -1,9 +1,11 @@
 """Derive a manifest from an already-deployed documentation tree.
 
 A deployed site is one directory per version at the root, plus symlinks such as
-``stable -> 1.12`` that alias a version under a stable URL. Anything else at the
-root (``CNAME``, ``.nojekyll``, a landing ``index.html``, stray directories) is
-not ours and is ignored.
+``stable -> 1.12`` that alias a version under a stable URL. Alias chains are
+common in the wild -- pandas ships ``stable -> 2.1 -> 2.1.3`` -- so symlinks are
+resolved transitively and every link in the chain counts as an alias of the real
+directory at the end. Anything else at the root (``CNAME``, ``.nojekyll``, a
+landing ``index.html``, stray directories) is not ours and is ignored.
 """
 
 from __future__ import annotations
@@ -70,13 +72,14 @@ def scan_tree(
     -------
     manifest : Manifest
         Development entries first, then numbered versions newest-first. A
-        directory reached through an alias symlink is listed once, under the
-        alias URL and named ``"<version> (<alias>)"``; the target of the
-        ``stable`` alias is marked preferred.
+        directory reached through alias symlinks is listed once, under the alias
+        URL and named ``"<version> (<alias>)"``; the target of the ``stable``
+        alias is marked preferred.
     """
     if not base_url.endswith("/"):
         base_url += "/"
     dev_versions = tuple(dev_versions)
+    root = os.path.realpath(site_dir)
 
     versions: list[str] = []
     aliases: dict[str, list[str]] = {}
@@ -85,7 +88,7 @@ def scan_tree(
             if not item.is_dir():
                 continue
             if item.is_symlink():
-                target = _symlink_target(item.path)
+                target = _symlink_target(item.path, root)
                 if target is not None:
                     aliases.setdefault(target, []).append(item.name)
             elif item.name in dev_versions or VERSION_RE.match(item.name):
@@ -126,12 +129,9 @@ def _pick_alias(names: list[str]) -> str | None:
     return PREFERRED_ALIAS if PREFERRED_ALIAS in names else names[0]
 
 
-def _symlink_target(path: str) -> str | None:
-    """Name of the sibling directory a symlink points at, if it is one."""
-    target = os.readlink(path)
-    if os.path.isabs(target):
-        target = os.path.relpath(target, os.path.dirname(path))
-    target = os.path.normpath(target)
-    if os.sep in target or target in (os.curdir, os.pardir):
+def _symlink_target(path: str, root: str) -> str | None:
+    """Name of the real directory a symlink chain ends at, if it stays in ``root``."""
+    parent, name = os.path.split(os.path.realpath(path))
+    if parent != root or not name:
         return None
-    return target
+    return name

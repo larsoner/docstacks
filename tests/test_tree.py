@@ -76,6 +76,21 @@ def test_scan_tree_ignores_unusable_symlinks(site: Path, tmp_path: Path) -> None
     ]
 
 
+def test_scan_tree_alias_chain(tmp_path: Path) -> None:
+    """pandas-style ``stable -> 2.1 -> 2.1.3`` resolves to the real directory."""
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "2.1.3").mkdir()
+    os.symlink("2.1.3", site / "2.1", target_is_directory=True)
+    os.symlink("2.1", site / "stable", target_is_directory=True)
+    manifest = scan_tree(site, "https://pandas.pydata.org/docs/")
+    assert [entry.version for entry in manifest] == ["2.1.3"]
+    entry = manifest.entries[0]
+    assert entry.url == "https://pandas.pydata.org/docs/stable/"
+    assert entry.name == "2.1.3 (stable)"
+    assert entry.preferred
+
+
 def test_scan_tree_custom_dev_versions(site: Path) -> None:
     """``dev_versions`` names are listed first, in the order given."""
     (site / "main").mkdir()
