@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from http.client import HTTPException
 from pathlib import Path
@@ -87,6 +87,7 @@ def check_live(
     urls: bool = False,
     match: bool = False,
     timeout: float = DEFAULT_TIMEOUT,
+    ignore: Collection[str] = (),
 ) -> list[str]:
     """Fetch the pages a manifest points at and report what is wrong with them.
 
@@ -105,6 +106,11 @@ def check_live(
         the entry's ``version``, or carries none at all.
     timeout : float
         Seconds to wait for each request.
+    ignore : collection of str
+        Versions to skip entirely -- they are never fetched, so a permanently
+        broken archive is not hammered on every run. A version that matches no
+        entry is accepted in silence: manifests change over time, and a cron
+        job should not start failing the day an old entry is finally removed.
 
     Returns
     -------
@@ -116,7 +122,7 @@ def check_live(
     if not (urls or match):
         return problems
     for index, entry in enumerate(manifest):
-        if not entry.url:
+        if not entry.url or entry.version in ignore:
             continue
         label = _label(index, entry)
         page = _get(entry.url, timeout)
@@ -135,6 +141,7 @@ def check_site_dir(
     manifest: Manifest,
     site_dir: str | os.PathLike[str],
     dev_versions: Sequence[str] = ("dev",),
+    ignore: Collection[str] = (),
 ) -> list[str]:
     """Cross-check a manifest against a deployed tree, without any network.
 
@@ -150,6 +157,10 @@ def check_site_dir(
         Root of the deployed site.
     dev_versions : sequence of str
         Directory names that count as development builds.
+    ignore : collection of str
+        Names to leave alone, in both directions: an ignored entry is not
+        required to have a directory, and an ignored directory is not required
+        to have an entry. Names matching nothing are accepted in silence.
 
     Returns
     -------
@@ -170,14 +181,14 @@ def check_site_dir(
     problems: list[str] = []
     listed = {entry.version for entry in manifest}
     for index, entry in enumerate(manifest):
-        if not _is_version(entry.version, dev_versions):
+        if entry.version in ignore or not _is_version(entry.version, dev_versions):
             continue
         if entry.version not in present:
             problems.append(
                 f"{_label(index, entry)}: no directory or alias named "
                 f"{entry.version!r} in {site}"
             )
-    for name in sorted(directories - listed):
+    for name in sorted(directories - listed - set(ignore)):
         if _is_version(name, dev_versions):
             problems.append(f"{name!r} is deployed in {site} but has no manifest entry")
     return problems

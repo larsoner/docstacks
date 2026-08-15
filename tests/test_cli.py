@@ -59,6 +59,26 @@ def test_validate_live(
     assert "'1.12'" in err and "'stable'" in err
 
 
+def test_validate_ignore(
+    www: Path, base_url: str, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """``--ignore`` lets a site with permanently broken archives reach exit 0."""
+    write_page(www / "1.12", "1.12")
+    path = tmp_path / "versions.json"
+    manifest = Manifest()
+    manifest.add("1.12", f"{base_url}1.12/", preferred=True)
+    manifest.add("0.21", f"{base_url}0.21/")
+    manifest.add("0.20", f"{base_url}0.20/")
+    manifest.dump(path)
+
+    argv = ["validate", str(path), "--check-urls", "--check-match"]
+    assert main(argv) == 1
+    assert capsys.readouterr().err.count("\n") == 2
+
+    assert main([*argv, "--ignore", "0.21", "--ignore", "0.20"]) == 0
+    assert capsys.readouterr().err == ""
+
+
 def test_validate_remote_manifest(www: Path, base_url: str) -> None:
     """The manifest itself can be fetched from where it is served."""
     Manifest().add("1.12", "https://mne.tools/1.12/", preferred=True).dump(

@@ -147,6 +147,52 @@ def test_check_live_skips_entries_without_a_url(base_url: str) -> None:
     assert QuietHandler.requests == []
 
 
+# -- --ignore --------------------------------------------------------------
+
+
+def test_check_live_ignore(www: Path, base_url: str) -> None:
+    """An ignored entry is skipped before the request, not fetched and hushed."""
+    write_page(www / "1.12", "1.12")
+    manifest = manifest_for(base_url, "1.12", "0.21")
+
+    assert check_live(manifest, urls=True, match=True, ignore=("0.21",)) == []
+    assert QuietHandler.requests == ["/1.12/"]
+
+
+def test_check_live_ignore_unknown_version(www: Path, base_url: str) -> None:
+    """A name matching no entry is accepted in silence, so old crons keep working."""
+    write_page(www / "1.12", "1.12")
+    manifest = manifest_for(base_url, "1.12")
+    assert check_live(manifest, match=True, ignore=("0.1", "never-existed")) == []
+
+
+def test_ignore_does_not_excuse_schema_problems(base_url: str) -> None:
+    """Ignore is about the deployed world, not the file's own integrity."""
+    url = f"{base_url}0.21/"
+    manifest = Manifest([Entry(version="0.21", url=url), Entry(version="0.21", url="")])
+    assert manifest.validate() == [
+        "entry 1 ('0.21'): url is empty",
+        "duplicate version '0.21' (entries 0, 1)",
+        "no entry is marked preferred",
+    ]
+    assert check_live(manifest, urls=True, ignore=("0.21",)) == []
+    assert QuietHandler.requests == []
+
+
+def test_check_site_dir_ignore_both_directions(site: Path) -> None:
+    """An ignored entry needs no directory, and an ignored directory no entry."""
+    manifest = manifest_for("https://x/", "dev", "1.12", "1.9", "0.25.x", "0.21")
+
+    assert check_site_dir(manifest, site, ignore=("0.21", "1.11")) == []
+
+    problems = check_site_dir(manifest, site, ignore=("0.21",))
+    assert problems == [f"'1.11' is deployed in {site} but has no manifest entry"]
+    problems = check_site_dir(manifest, site, ignore=("1.11",))
+    assert problems == [
+        f"entry 4 ('0.21'): no directory or alias named '0.21' in {site}"
+    ]
+
+
 # -- --site-dir ------------------------------------------------------------
 
 

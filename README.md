@@ -55,7 +55,7 @@ The theme matches a switcher entry by comparing its `version` against the `versi
 docstacks validate https://mne.tools/dev/_static/versions.json --check-urls --check-match
 ```
 
-Worth a weekly cron job: it exits nonzero with one line per problem, so it reads well in CI logs.
+It exits nonzero with one line per problem, so it reads well in CI logs.
 
 ```
 entry 1 ('stable'): version mismatch, https://mne.tools/stable/ is built with
@@ -63,13 +63,26 @@ entry 1 ('stable'): version mismatch, https://mne.tools/stable/ is built with
 entry 7 ('0.24'): https://mne.tools/0.24/ returned HTTP 404
 ```
 
-`--check-urls` and `--check-match` are opt-in and share one request per entry; nothing touches the network otherwise. There is an offline cross-check too, for use right after a deploy:
+Most sites have a few versions that will never pass and are not meant to: archives built before the theme had a switcher at all, or a deliberate catch-all entry pointing somewhere other than its own directory. Exempt them with `--ignore` so a cron job can actually reach exit 0 on a healthy site:
+
+```bash
+docstacks validate https://mne.tools/dev/_static/versions.json \
+    --check-urls --check-match \
+    --ignore 1.1 --ignore 1.0 \
+    --ignore 0.24 --ignore 0.23 --ignore 0.22 --ignore 0.21 --ignore 0.20
+```
+
+That is MNE's real invocation today, and it is green — the seven exemptions are the pre-pydata-theme archives plus the `0.20` catch-all that points into `dev/old_versions/`. An `--ignore` naming a version that no longer exists is accepted in silence, so pruning old entries never breaks the cron.
+
+`--check-urls` and `--check-match` are opt-in and share one request per entry; an ignored entry is skipped before the request rather than fetched and hushed, so dead archives are not hammered every night. Nothing touches the network otherwise, and `--ignore` never excuses a schema problem — a duplicate version or an empty URL still fails, because that is about the file's integrity rather than the deployed world.
+
+There is an offline cross-check too, for use right after a deploy:
 
 ```bash
 docstacks validate versions.json --site-dir ~/mne-tools.github.io
 ```
 
-which reports entries with no directory or alias deployed, and version directories nothing lists. Hand-added foreign entries such as a `legacy` catch-all are left alone.
+which reports entries with no directory or alias deployed, and version directories nothing lists. Hand-added foreign entries such as a `legacy` catch-all are left alone, and `--ignore` works here too, in both directions.
 
 ## The manifest tools
 

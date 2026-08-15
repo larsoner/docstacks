@@ -52,6 +52,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--site-dir", help="deployed site to cross-check the manifest against"
     )
     validate.add_argument(
+        "--ignore",
+        action="append",
+        dest="ignore",
+        metavar="VERSION",
+        help="version to exempt from the deployed-world checks, for archives "
+        "that will never pass (repeatable)",
+    )
+    validate.add_argument(
         "--timeout",
         type=float,
         default=DEFAULT_TIMEOUT,
@@ -162,13 +170,15 @@ def _add_deploy_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _run_validate(args: argparse.Namespace) -> int:
     manifest = load_manifest(args.manifest, timeout=args.timeout)
+    ignore = frozenset(args.ignore or ())
     problems = manifest.validate()
     if args.site_dir:
         problems += check_site_dir(
-            manifest, args.site_dir, dev_versions=_dev_versions(args)
+            manifest, args.site_dir, dev_versions=_dev_versions(args), ignore=ignore
         )
     problems += check_live(
         manifest,
+        ignore=ignore,
         urls=args.check_urls,
         match=args.check_match,
         timeout=args.timeout,
