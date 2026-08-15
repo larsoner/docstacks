@@ -6,7 +6,7 @@ Guidance for AI coding agents working in this repository.
 
 `docstacks` manages the one-directory-per-version documentation layout that scientific Python projects publish to GitHub Pages: a site root holding `dev/`, `1.12/`, `1.11/`, a `stable` symlink, and a `versions.json` manifest read by the pydata-sphinx-theme version switcher.
 It is "mike for Sphinx" — it owns the deploy transaction, not the build.
-It has the manifest layer (`manifest.py`, `tree.py`), the git backend (`deploy.py` and `lifecycle.py` over `_repo.py` and `_git.py`), and a thin CLI over all of it: `deploy`, `promote`, `retitle`, `delete`, `prune`, plus the standalone `validate`, `generate`, and `list`.
+It has the manifest layer (`manifest.py`, `tree.py`), the git backend (`deploy.py` and `lifecycle.py` over `_repo.py` and `_git.py`), the live switcher checks (`check.py`), and a thin CLI over all of it: `deploy`, `promote`, `retitle`, `delete`, `prune`, plus the standalone `validate`, `generate`, and `list`.
 Read [DESIGN.md](DESIGN.md) before adding anything structural — it records the roadmap, the switcher schema semantics, and the reasoning behind the constraints below.
 
 ## Dev setup
@@ -80,6 +80,10 @@ Guards, staging, committing, and pushing live in `docstacks._repo` and are share
 **Never leave a half-written checkout.**
 Validate everything up front, then mutate, then stage path-by-path (`git add -A -- <paths>`) rather than with a repo-wide add.
 Every command that touches a version commits with a trailer naming it (`Deployed-version:`, `Deleted-version:`, `Retitled-version:`), so any commit can be attributed to a version and an operation without parsing the subject line.
+
+**Network access is opt-in and lives in `check.py`.**
+`urllib` only, no retries, a caller-supplied timeout, and every transport failure turned into a describable finding rather than an exception that aborts the sweep.
+Tests never touch the real network: `conftest.py` serves a `tmp_path` tree over localhost with `http.server`.
 
 **History rewriting uses plumbing, not porcelain.**
 `prune` re-parents existing tree objects with `git commit-tree`; a rebase or cherry-pick would replay diffs across gigabytes of HTML.

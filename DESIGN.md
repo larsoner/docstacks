@@ -103,6 +103,24 @@ The rewrite is done with **`git commit-tree`, never a rebase or a cherry-pick**.
 
 `--push` means `git push --force-with-lease`, and the command says loudly on stderr that history was rewritten. Without it, the exact push command is printed rather than run, because rewriting a published docs branch is not something to do by accident.
 
+### Switcher validation (done — was tier-3 backlog)
+
+This was parked behind the deploy work as a nice-to-have and got promoted after it caught a live bug on mne.tools, so it is now part of the shipped surface rather than the backlog.
+
+The theme resolves a switcher entry by comparing its `version` against the `version_match` value baked into each build's HTML, **by strict string equality**. That is the whole matching rule — no normalization, no aliasing — and it is why the failure mode is so quiet: an entry that matches nothing simply never becomes the "current" one, so the dropdown falls back to "Choose version" and the old-version banner (`entry.preferred && entry.match`) never fires. Users see a switcher that looks merely unhelpful rather than broken, and maintainers see nothing at all. See pydata-sphinx-theme [#2465](https://github.com/pydata/pydata-sphinx-theme/issues/2465) and [#1629](https://github.com/pydata/pydata-sphinx-theme/issues/1629) for how often this bites.
+
+MNE hit exactly this: the manifest's stable entry carried `"version": "stable"` while the pages under `/stable/` were built with `version_match = '1.12'`.
+
+The decisive point for the design is that **half the comparison is not in the manifest**. `Manifest.validate()` can never catch this class of bug no matter how much schema it grows, because the other operand lives in deployed HTML on a web server. So `docstacks.check` fetches it:
+
+- `--check-match` GETs each entry's page and pulls out the assignment with a tolerant regex (`theme_switcher_version_match\s*=\s*['"]([^'"]*)['"]`), rather than parsing JS or HTML. The theme's emitted shape has changed across releases and will again; a regex over the raw body degrades into "could not find it" instead of crashing, and "could not find it" is itself a useful finding for a site on a theme too old to have a switcher at all.
+- `--check-urls` and `--check-match` **share one GET per entry**, and one entry's failure never aborts the sweep — a validator that stops at the first dead link is useless on a site with a decade of archived versions.
+- Both are **opt-in**, and the timeout is a flag. Validation runs in CI where the network is the flakiest thing present; nobody should get a network dependency they did not ask for by running `docstacks validate`.
+- The manifest source may itself be a URL, so the file can be checked **where it is actually served** rather than where it is generated. Those differ exactly when something has gone wrong with a deploy, which is the case worth catching.
+- `--site-dir` is the offline half: it cross-checks a manifest against a deployed tree. It flags only entries whose version is version-shaped or a dev name — a hand-added catch-all such as MNE's `legacy` entry points into a subdirectory of another version and has no directory of its own, so flagging it would train people to ignore the output.
+
+Only the standard library is used (`urllib`), which the zero-dependency constraint requires and which is sufficient here: no retries, no connection pooling, no auth.
+
 ### Later — rsync backend
 
 The same command surface against an rsync/SSH target instead of a git branch, for projects that publish to a plain web server. The deploy transaction is factored behind a backend interface from milestone 2 onward so this does not require restructuring.

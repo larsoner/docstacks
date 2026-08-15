@@ -45,10 +45,36 @@ docstacks prune --repo ~/mne-tools.github.io --keep 20   # collapse older histor
 
 `prune` keeps the most recent commits intact and squashes everything older into one root, so the repo stops growing without invalidating recent shallow clones. It rewrites history, so it warns loudly and only force-pushes when you ask.
 
-The manifest tools stand alone too:
+## Validating a live switcher
+
+The theme matches a switcher entry by comparing its `version` against the `version_match` value **baked into each build's HTML**, by strict string equality. Half of that comparison lives in your deployed pages, so no amount of checking `versions.json` on its own can tell you the dropdown is broken — which is how MNE ended up serving a manifest whose stable entry said `"version": "stable"` while the pages behind it were built as `1.12`, leaving every visitor looking at "Choose version".
+
+`docstacks validate` fetches both halves and compares them, against the file where it is actually served:
 
 ```bash
-docstacks validate versions.json          # report problems, exit 1 if any
+docstacks validate https://mne.tools/dev/_static/versions.json --check-urls --check-match
+```
+
+Worth a weekly cron job: it exits nonzero with one line per problem, so it reads well in CI logs.
+
+```
+entry 1 ('stable'): version mismatch, https://mne.tools/stable/ is built with
+    version_match '1.12' but the manifest lists version 'stable'
+entry 7 ('0.24'): https://mne.tools/0.24/ returned HTTP 404
+```
+
+`--check-urls` and `--check-match` are opt-in and share one request per entry; nothing touches the network otherwise. There is an offline cross-check too, for use right after a deploy:
+
+```bash
+docstacks validate versions.json --site-dir ~/mne-tools.github.io
+```
+
+which reports entries with no directory or alias deployed, and version directories nothing lists. Hand-added foreign entries such as a `legacy` catch-all are left alone.
+
+## The manifest tools
+
+```bash
+docstacks validate versions.json          # schema only; exit 1 if any problems
 docstacks generate ./site --base-url https://mne.tools/
 docstacks list versions.json
 ```
