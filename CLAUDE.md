@@ -9,6 +9,40 @@ It is "mike for Sphinx" — it owns the deploy transaction, not the build.
 It has the manifest layer (`manifest.py`, `tree.py`), the git backend (`deploy.py` and `lifecycle.py` over `_repo.py` and `_git.py`), the live switcher checks (`check.py`), and a thin CLI over all of it: `deploy`, `promote`, `retitle`, `delete`, `prune`, plus the standalone `validate`, `generate`, and `list`.
 Read [DESIGN.md](DESIGN.md) before adding anything structural — it records the roadmap, the switcher schema semantics, and the reasoning behind the constraints below.
 
+## Adoption roadmap
+
+The whole point of this tool is to replace hand-rolled deployment machinery in real projects, starting with MNE-Python; work here should be weighed against the plan below.
+
+### MNE-Python (pilot, in progress)
+
+The deployment target is the `mne-tools/mne-tools.github.io` repo (branch `main`), served at https://mne.tools/ via legacy GitHub Pages, with unmanaged root files (`CNAME`, `.nojekyll`, `index.html`, `versionwarning.js`) that a deploy must never touch.
+The layout is `dev/` plus one `X.Y/` directory per version plus `stable` as a committed relative symlink (converted August 2026); GitHub Pages serves committed symlinks, which the whole design relies on.
+Deploys run from CircleCI in `mne-tools/mne-python` (`.circleci/config.yml`, "Deploy docs" step) over an SSH deploy key against a cached `--depth=1` clone; since mne-tools/mne-python#14158 the branch mapping is `main` → `dev/` and `maint/X.Y` → `X.Y/`, nightly crons skip when a deployed `_version.txt` already matches the source SHA, and `[circle deploy]` in a commit message forces a build.
+The switcher manifest's source of truth is `doc/_static/versions.json` in mne-python, served live at https://mne.tools/dev/_static/versions.json — that `json_url` is baked into every published build's HTML, which constrains any relocation.
+
+The switchover (one coordinated change across both repos, not yet started) is:
+1. Replace the CircleCI deploy step with `docstacks deploy doc/_build/html $DIR --repo <checkout> --base-url https://mne.tools/ --source-sha $CIRCLE_SHA1 --push`, and make release day a single `docstacks promote` (replacing the multi-step manual process in the MNE release wiki).
+2. Move the manifest to the site root (https://mne.tools/versions.json), flip `json_url` in mne-python's `doc/conf.py`, and delete `doc/_static/versions.json` from mne-python.
+3. Keep every already-published build working via a committed symlink shim `dev/_static/versions.json -> ../../versions.json`; each dev deploy replaces the `dev/` tree wholesale, so docstacks needs a mechanism to recreate managed shims after a deploy — **this is the main missing feature blocking the switchover**.
+4. Replace MNE's annual manual history squash with `docstacks prune`, anchored via the `Deployed-version:` commit trailers.
+
+Adoptable today, independent of the switchover: a scheduled `docstacks validate https://mne.tools/dev/_static/versions.json --check-urls --check-match --ignore 1.1 --ignore 1.0 --ignore 0.24 --ignore 0.23 --ignore 0.22 --ignore 0.21 --ignore 0.20` (the ignores are pre-pydata-theme archives that can never carry a `version_match`, plus the intentional `0.20` catch-all that points into `dev/old_versions/`).
+
+### Other scientific-python consumers (rough adoption order)
+
+scikit-image is the nearest-term second adopter: `gh-pages` of `scikit-image/docs` already has dir-per-version plus a `stable` symlink, CI force-pushes `dev`, and releases are a manual `reset --hard` ritual that `deploy`/`promote`/`prune` replace directly.
+NumPy's `numpy/doc` repo is already "manual docstacks" (dir-per-version, `stable` symlink, hand-edited manifest, hand-run release upload); its extra needs are auxiliary per-version artifacts (PDFs copied into each version dir) and cheap operation against an ~826 MB repo, which is why docstacks never clones and must stay sparse-checkout-friendly.
+scikit-learn already automates everything docstacks does (sparse-checkout deploys, a manifest generated from the deployed tree) but is drowning in repo size and may leave git hosting entirely (scikit-learn/scikit-learn#34254) — watching brief, not a target.
+pandas lost its doc server in 2026 and its hosting is in flux (pandas-dev/pandas#64703); adoption would need two-level aliases (`stable -> 2.1 -> 2.1.3`, which `tree.py` already resolves on read) — watching brief.
+SciPy deploys to a plain server over rsync/SSH, so adoption there needs a non-git transport backend — explicitly future work, do not start it without a design conversation.
+
+### Spec coordination (mike and pydata-sphinx-theme)
+
+Format convergence is being discussed with mike's author in jimporter/mike#263 and with the theme in pydata/pydata-sphinx-theme#2470: mike says `title` where we say `name`, wants `url` optional with relative resolution as the default, has an `aliases` array per entry, and may adopt `preferred`.
+Hold all manifest-format changes (accepting `title` as a `name` fallback, tolerating an absent `url`, emitting `aliases`) until those threads settle — do not unilaterally change the emitted schema.
+Longer-term, the git layer here is intended to be extractable as a deploy-target plugin for mike's planned "NuMike" generalization; keep it cleanly separated from the manifest layer.
+The package name itself may still change (candidates were floated in jimporter/mike#263), so avoid spreading the current name into new user-facing strings beyond what already exists.
+
 ## Dev setup
 
 ```bash
