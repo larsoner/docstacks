@@ -327,7 +327,3 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (CheckError, DeployError, GitError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

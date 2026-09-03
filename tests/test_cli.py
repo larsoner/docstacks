@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
+import sys
 from pathlib import Path
 
 import pytest
@@ -331,3 +333,15 @@ def test_no_command() -> None:
     with pytest.raises(SystemExit) as excinfo:
         main([])
     assert excinfo.value.code == 2
+
+
+def test_python_m(
+    mne_manifest_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["docstacks", "list", str(mne_manifest_path)])
+    with pytest.raises(SystemExit) as excinfo:
+        runpy.run_module("docstacks", run_name="__main__")
+    assert excinfo.value.code == 0
+    assert "stable" in capsys.readouterr().out
