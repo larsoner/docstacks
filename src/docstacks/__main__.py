@@ -1,4 +1,4 @@
-"""Entry point for ``python -m docstacks``, for when the console script is not on PATH."""
+"""Entry point for ``python -m docstacks``, for when the script is not on PATH."""
 
 from docstacks.cli import main
 
