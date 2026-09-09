@@ -13,20 +13,22 @@ Read [DESIGN.md](DESIGN.md) before adding anything structural — it records the
 
 The whole point of this tool is to replace hand-rolled deployment machinery in real projects, starting with MNE-Python; work here should be weighed against the plan below.
 
-### MNE-Python (pilot, in progress)
+### MNE-Python (pilot, deployed)
 
 The deployment target is the `mne-tools/mne-tools.github.io` repo (branch `main`), served at https://mne.tools/ via legacy GitHub Pages, with unmanaged root files (`CNAME`, `.nojekyll`, `index.html`, `versionwarning.js`) that a deploy must never touch.
 The layout is `dev/` plus one `X.Y/` directory per version plus `stable` as a committed relative symlink (converted August 2026); GitHub Pages serves committed symlinks, which the whole design relies on.
 Deploys run from CircleCI in `mne-tools/mne-python` (`.circleci/config.yml`, "Deploy docs" step) over an SSH deploy key against a cached `--depth=1` clone; since mne-tools/mne-python#14158 the branch mapping is `main` → `dev/` and `maint/X.Y` → `X.Y/`, nightly crons skip when a deployed `_version.txt` already matches the source SHA, and `[circle deploy]` in a commit message forces a build.
-The switcher manifest's source of truth is `doc/_static/versions.json` in mne-python, served live at https://mne.tools/dev/_static/versions.json — that `json_url` is baked into every published build's HTML, which constrains any relocation.
+The switcher manifest's source of truth is `versions.json` at the site root, owned by docstacks; before September 2026 it lived in mne-python as `doc/_static/versions.json` and was served from `dev/_static/`, and that old URL is baked into every build published before then.
 
-The switchover (one coordinated change across both repos, not yet started) is:
-1. Replace the CircleCI deploy step with `docstacks deploy doc/_build/html $DIR --repo <checkout> --base-url https://mne.tools/ --source-sha $CIRCLE_SHA1 --push`, and make release day a single `docstacks promote` (replacing the multi-step manual process in the MNE release wiki).
-2. Move the manifest to the site root (https://mne.tools/versions.json), flip `json_url` in mne-python's `doc/conf.py`, and delete `doc/_static/versions.json` from mne-python.
-3. Keep every already-published build working via a committed symlink shim `dev/_static/versions.json -> ../../versions.json`; each dev deploy replaces the `dev/` tree wholesale, so docstacks needs a mechanism to recreate managed shims after a deploy — **this is the main missing feature blocking the switchover**.
-4. Replace MNE's annual manual history squash with `docstacks prune`, anchored via the `Deployed-version:` commit trailers.
+The switchover landed in three pieces: mne-tools/mne-python#14273 (2026-09-03) replaced the CircleCI copy-and-commit block with `python -m docstacks deploy ... --no-manifest`, pinned by git SHA; a manual site commit seeded `versions.json` at the site root; and mne-python commit 2a29ec571 (2026-09-09) flipped `json_url` to https://mne.tools/versions.json, deleted `doc/_static/versions.json`, and made CI deploy with `--base-url https://mne.tools/`.
+Every already-published build still fetches https://mne.tools/dev/_static/versions.json, and that keeps working because the CI step runs `ln -sfn ../../versions.json /tmp/build/html/_static/versions.json` on the build output before deploying; `deploy` copies with `symlinks=True`, so the shim is redeployed with `dev/` every time and no shim-management feature was needed after all.
+The CI step also passes `--alias stable` when `readlink stable` in the site checkout equals the directory being deployed, because `deploy` without an alias moves an entry's URL back to its own directory and a 1.13.1 bugfix deploy would otherwise silently rewrite the stable entry to `/1.13/`.
+Release day is now `cp -a 1.13 /tmp/1.13-html && docstacks promote /tmp/1.13-html 1.13 --repo . --base-url https://mne.tools/ --push` followed by `docstacks retitle dev "1.14 (dev)" --push` in a clean clone of the site repo; the temp copy exists because `promote` deletes the target directory before copying the HTML in.
+The first `[circle deploy]` on a new `maint/X.Y` branch adds that version's manifest entry automatically (non-preferred, pointing at its own directory), so nothing is hand-edited any more.
+Two tool follow-ups fall out of this: `deploy` should keep aliases that already point at the version being deployed (what mike does; would make the CI `readlink` guard unnecessary), and `promote` should accept an already-deployed version without new HTML.
+Still to come: `prune` to replace MNE's annual manual history squash, anchored via the `Deployed-version:` commit trailers.
 
-Adoptable today, independent of the switchover: a scheduled `docstacks validate https://mne.tools/dev/_static/versions.json --check-urls --check-match --ignore 1.1 --ignore 1.0 --ignore 0.24 --ignore 0.23 --ignore 0.22 --ignore 0.21 --ignore 0.20` (the ignores are pre-pydata-theme archives that can never carry a `version_match`, plus the intentional `0.20` catch-all that points into `dev/old_versions/`).
+Adoptable today: a scheduled `docstacks validate https://mne.tools/versions.json --check-urls --check-match --ignore 1.1 --ignore 1.0 --ignore 0.24 --ignore 0.23 --ignore 0.22 --ignore 0.21 --ignore 0.20` (the ignores are pre-pydata-theme archives that can never carry a `version_match`, plus the intentional `0.20` catch-all that points into `dev/old_versions/`).
 
 ### Other scientific-python consumers (rough adoption order)
 
