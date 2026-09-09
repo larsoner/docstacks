@@ -26,7 +26,11 @@ The CI deploy step decides on its own: a `maint/X.Y` directory that sorts newer 
 Release day therefore has no manual website step, and the CircleCI nightlies for `main` and `maint/*` both live in every branch's config (each fires only on the branches its filter names), so cutting a maint branch needs no config edits; the previous stable branch's `.circleci/config.yml` is simply deleted to stop its nightly.
 The first `[circle deploy]` on a new `maint/X.Y` branch adds that version's manifest entry automatically (non-preferred, pointing at its own directory), so nothing is hand-edited any more.
 One tool follow-up is still outstanding: `promote` should accept an already-deployed version without new HTML (no longer needed by MNE, since CI promotes from the build it just made).
-The CI deploy step also runs `prune --keep 20 --push` after every deploy, so the site history is a rolling window and MNE's manual history squash is gone; this needs the CI clone to be full rather than `--depth=1` (a short history is a no-op for `prune`, not an error), and a dry run on the real history (2026-09-09) took under a second, kept the tree byte-identical, and cut reachable data from 5.1 GiB to 2.3 GiB.
+The CI deploy step also runs `python -m docstacks prune --keep 20 --min-squash 20 --push` after every deploy, so the site history stays a rolling window of 20 to 40 commits and MNE's manual history squash is gone; this needs the CI clone to be full rather than `--depth=1` (a short history is a no-op for `prune`, not an error).
+Keeping the base commit as the squash commit's parent is what makes that affordable: each rewrite uploads only the churn since the previous squash (277 MB measured for 20 deploys on 2026-09-09, so roughly 300-550 MB for 20 to 40), and `--min-squash 20` means a squash commit joins the chain only every ~20 deploys rather than on every run.
+The first prune of a repository has to name its base — for MNE `--base cc8eb01f4`, the last hand-made "Archive 1.11" commit — after which `prune` finds the previous squash commit by its subject on its own.
+The redesign was forced on 2026-09-09: collapsing everything older into a parentless root shares no commit with the remote, so git re-sent the entire 6 GB tree as a 2.59 GiB pack and GitHub refused it at its 2 GiB limit.
+A history that stayed bounded with no squash chain at all would mean creating the commits server-side through GitHub's Data API instead of pushing a disjoint history; that is future work, not something to start without a design conversation.
 
 Adoptable today: a scheduled `docstacks validate https://mne.tools/versions.json --check-urls --check-match --ignore 1.1 --ignore 1.0 --ignore 0.24 --ignore 0.23 --ignore 0.22 --ignore 0.21 --ignore 0.20` (the ignores are pre-pydata-theme archives that can never carry a `version_match`, plus the intentional `0.20` catch-all that points into `dev/old_versions/`).
 
@@ -123,4 +127,5 @@ Tests never touch the real network: `conftest.py` serves a `tmp_path` tree over 
 
 **History rewriting uses plumbing, not porcelain.**
 `prune` re-parents existing tree objects with `git commit-tree`; a rebase or cherry-pick would replay diffs across gigabytes of HTML.
+It also never leaves a parentless root behind: the rewritten history has to stay connected to a commit the remote already has, or the next push re-uploads the whole site (see DESIGN.md).
 Anything else that reshapes history should follow the same rule.

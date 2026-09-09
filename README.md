@@ -40,10 +40,10 @@ The rest of the lifecycle:
 ```bash
 docstacks retitle 1.11 "1.11 (archived)" --repo ~/mne-tools.github.io
 docstacks delete 0.24 --repo ~/mne-tools.github.io
-docstacks prune --repo ~/mne-tools.github.io --keep 20   # collapse older history
+docstacks prune --repo ~/mne-tools.github.io --keep 20 --base v1.11-archive  # squash older history
 ```
 
-`prune` keeps the most recent commits intact and squashes everything older into one root, so the repo stops growing without invalidating recent shallow clones. It rewrites history, so it warns loudly and only force-pushes when you ask.
+`prune` keeps the most recent commits intact and squashes everything between them and a base commit onto that base, so the repo stops growing without invalidating recent shallow clones. Keeping the base matters for more than tidiness: a history sharing no commit with the remote makes git re-upload every file on the site, which on a multi-gigabyte site is a push large enough for GitHub to refuse. After the first run the base is found automatically — it is the commit the previous prune squashed onto — and `--min-squash N` waits until N commits have piled up, so a job running after every deploy rewrites in batches. It rewrites history, so it warns loudly and only force-pushes when you ask.
 
 ## Validating a live switcher
 

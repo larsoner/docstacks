@@ -1,8 +1,9 @@
 """Lifecycle operations on an already-deployed site: retitle, delete, prune.
 
 None of these build or rebuild anything. ``retitle`` touches only the manifest,
-``delete`` removes one version directory and its entry, and ``prune`` rewrites
-the branch's history without touching its content.
+``delete`` removes one version directory and its entry, and ``prune`` collapses
+everything between a base commit and the retention window, without touching any
+content.
 """
 
 from __future__ import annotations
@@ -28,7 +29,8 @@ from docstacks.tree import _aliases_pointing_at
 
 __all__ = ["PruneResult", "delete", "prune", "retitle"]
 
-#: Subject of the synthetic commit that replaces everything before the anchor.
+#: Subject of the commit that replaces everything between the base and the window.
+#: A later prune finds it again to use as that run's default base.
 SQUASH_SUBJECT = "Squashed history (docstacks prune)"
 
 
@@ -43,15 +45,25 @@ class PruneResult:
     tip : str
         Full SHA of the new tip.
     kept : int
-        Commits preserved, counting the anchor.
+        Commits preserved, counting the oldest kept one.
     squashed : int
-        Commits collapsed into the new root. Zero means nothing was rewritten.
+        Commits collapsed into the squash commit. Zero means nothing was
+        rewritten.
+    base : str
+        Full SHA of the commit the squash was parented onto, whose own ancestry
+        is untouched. With a ``squashed`` of zero it is whatever the preserved
+        window already sat on.
+    pending : int
+        Commits sitting between the base and the window that were left there
+        because ``min_squash`` was not reached yet.
     """
 
     branch: str
     tip: str
     kept: int
     squashed: int
+    base: str
+    pending: int = 0
 
 
 def retitle(
@@ -200,15 +212,26 @@ def prune(
     *,
     keep: int | None = None,
     keep_since: str | None = None,
+    base: str | None = None,
+    min_squash: int = 1,
     push: bool = False,
 ) -> PruneResult:
-    """Collapse history older than an anchor into a single root commit.
+    """Collapse the history between a base commit and a retention window.
 
-    Every commit from the anchor to ``HEAD`` survives with its tree, message,
-    author, and author date intact; everything before it becomes one synthetic
-    root. The rewrite is done with ``git commit-tree`` rather than a rebase:
+    Every commit from the oldest kept one to ``HEAD`` survives with its tree,
+    message, author, and committer intact; everything between ``base``
+    (exclusive) and that window becomes a single squash commit whose parent is
+    ``base``. The rewrite is done with ``git commit-tree`` rather than a rebase:
     replaying diffs across multi-gigabyte documentation trees is hopeless, while
     re-parenting existing tree objects is cheap and cannot alter content.
+
+    ``base`` and all of its ancestors are left exactly as they are, which is
+    what keeps the push affordable. Git offers the remote a thin pack only for
+    objects reachable from a commit both sides already have, so a history that
+    shares no commit with the remote re-sends every tree and blob on the site:
+    MNE's 6 GB tree squashed onto a parentless root produced a 2.59 GiB pack
+    that GitHub refused at its 2 GiB limit, while the same push onto a kept base
+    is around 400 MB.
 
     Parameters
     ----------
@@ -219,7 +242,15 @@ def prune(
         Number of commits to preserve, counting ``HEAD``. A history that short
         or shorter is left alone. Mutually exclusive with ``keep_since``.
     keep_since : str | None
-        Revision to use as the anchor, preserved along with everything after it.
+        Oldest revision to preserve, kept along with everything after it.
+    base : str | None
+        Revision to squash onto, itself left untouched. Defaults to the most
+        recent earlier commit a previous prune squashed onto; a history with
+        none has to name one.
+    min_squash : int
+        Rewrite only once this many commits have piled up between the base and
+        the window, so a job that runs after every deploy squashes in batches
+        instead of adding a squash commit each time.
     push : bool
         Whether to ``git push --force-with-lease`` afterwards. This rewrites
         published history; every existing clone of the branch becomes invalid.
@@ -227,46 +258,72 @@ def prune(
     Returns
     -------
     result : PruneResult
-        Branch, new tip, and how many commits were kept and collapsed. A
-        ``squashed`` of zero means the anchor was already the root and nothing
-        was rewritten.
+        Branch, new tip, base, and how many commits were kept and collapsed. A
+        ``squashed`` of zero means nothing was rewritten, either because there
+        is nothing between the base and the window or because ``min_squash``
+        has not been reached.
     """
     repo_path = Path(repo_dir)
     if (keep is None) == (keep_since is None):
         raise DeployError("pass exactly one of keep or keep_since")
+    if min_squash < 1:
+        raise DeployError(f"min_squash must be at least 1, got {min_squash}")
     check_repo(repo_path, push=push)
     branch = require_branch(repo_path)
 
     total = int(_git.git(repo_path, "rev-list", "--count", "HEAD"))
-    anchor = keep_since
+    oldest = keep_since
     if keep is not None:
         if keep < 1:
             raise DeployError(f"keep must be at least 1, got {keep}")
         # a short history is nothing to collapse, so a CI job can run this every deploy
-        anchor = f"HEAD~{min(keep, total) - 1}"
+        oldest = f"HEAD~{min(keep, total) - 1}"
 
-    anchor_sha = _git.try_git(
-        repo_path, "rev-parse", "--verify", "--quiet", f"{anchor}^{{commit}}"
+    oldest_sha = _git.try_git(
+        repo_path, "rev-parse", "--verify", "--quiet", f"{oldest}^{{commit}}"
     )
-    if anchor_sha is None:
-        raise DeployError(f"unknown revision {anchor!r}")
+    if oldest_sha is None:
+        raise DeployError(f"unknown revision {oldest!r}")
     if (
-        _git.try_git(repo_path, "merge-base", "--is-ancestor", anchor_sha, "HEAD")
+        _git.try_git(repo_path, "merge-base", "--is-ancestor", oldest_sha, "HEAD")
         is None
     ):
-        raise DeployError(f"{anchor!r} is not an ancestor of HEAD")
+        raise DeployError(f"{oldest!r} is not an ancestor of HEAD")
 
-    kept = int(_git.git(repo_path, "rev-list", "--count", f"{anchor_sha}..HEAD")) + 1
+    kept = int(_git.git(repo_path, "rev-list", "--count", f"{oldest_sha}..HEAD")) + 1
     parent = _git.try_git(
-        repo_path, "rev-parse", "--verify", "--quiet", f"{anchor_sha}^"
+        repo_path, "rev-parse", "--verify", "--quiet", f"{oldest_sha}^"
     )
     if parent is None:
         head = _git.git(repo_path, "rev-parse", "HEAD")
-        return PruneResult(branch=branch, tip=head, kept=kept, squashed=0)
+        return PruneResult(
+            branch=branch, tip=head, kept=kept, squashed=0, base=oldest_sha
+        )
 
-    base_tree = _git.git(repo_path, "rev-parse", f"{parent}^{{tree}}")
-    tip = _git.git(repo_path, "commit-tree", base_tree, "-m", SQUASH_SUBJECT)
-    replayed = _git.git(repo_path, "rev-list", "--reverse", f"{anchor_sha}^..HEAD")
+    base_sha = _find_base(repo_path, base, parent)
+    if _git.try_git(repo_path, "merge-base", "--is-ancestor", base_sha, "HEAD") is None:
+        raise DeployError(f"base {base_sha} is not an ancestor of HEAD")
+    if _git.try_git(repo_path, "merge-base", "--is-ancestor", base_sha, parent) is None:
+        raise DeployError(
+            f"base {base_sha} is inside the window being kept; it has to be "
+            "older than every preserved commit"
+        )
+
+    # a base already at the window's edge lands here as zero, the same no-op
+    squashed = int(_git.git(repo_path, "rev-list", "--count", f"{base_sha}..{parent}"))
+    if squashed < min_squash:
+        head = _git.git(repo_path, "rev-parse", "HEAD")
+        return PruneResult(
+            branch=branch,
+            tip=head,
+            kept=kept,
+            squashed=0,
+            base=base_sha,
+            pending=squashed,
+        )
+    tree = _git.git(repo_path, "rev-parse", f"{parent}^{{tree}}")
+    tip = _git.git(repo_path, "commit-tree", tree, "-p", base_sha, "-m", SQUASH_SUBJECT)
+    replayed = _git.git(repo_path, "rev-list", "--reverse", f"{oldest_sha}^..HEAD")
     for sha in replayed.splitlines():
         tip = _replay(repo_path, sha, tip)
 
@@ -274,12 +331,43 @@ def prune(
     _git.git(repo_path, "reset", "--hard")
     if push:
         push_branch(repo_path, force_with_lease=True)
-    return PruneResult(branch=branch, tip=tip, kept=kept, squashed=total - kept)
+    return PruneResult(
+        branch=branch, tip=tip, kept=kept, squashed=squashed, base=base_sha
+    )
+
+
+def _find_base(repo_dir: Path, base: str | None, parent: str) -> str:
+    """Resolve the commit to squash onto, defaulting to the last prune's."""
+    if base is not None:
+        sha = _git.try_git(
+            repo_dir, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"
+        )
+        if sha is None:
+            raise DeployError(f"unknown revision {base!r}")
+        return sha
+    for line in _git.git(repo_dir, "log", "--format=%H %s", parent).splitlines():
+        sha, _, subject = line.partition(" ")
+        if subject == SQUASH_SUBJECT:
+            return sha
+    raise DeployError(
+        f"no earlier {SQUASH_SUBJECT!r} commit to squash onto; pass --base REV "
+        "naming the commit to keep, which every later prune then finds itself"
+    )
 
 
 def _replay(repo_dir: Path, sha: str, parent: str) -> str:
     """Re-create ``sha`` on top of ``parent``, reusing its tree object as-is."""
-    who = _git.git(repo_dir, "log", "-1", "--format=%an%n%ae%n%aI", sha).splitlines()
+    fields = (
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_AUTHOR_DATE",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "GIT_COMMITTER_DATE",
+    )
+    who = _git.git(
+        repo_dir, "log", "-1", "--format=%an%n%ae%n%aI%n%cn%n%ce%n%cI", sha
+    ).splitlines()
     tree = _git.git(repo_dir, "rev-parse", f"{sha}^{{tree}}")
     body = _git.git(repo_dir, "log", "-1", "--format=%B", sha)
     return _git.git(
@@ -290,9 +378,5 @@ def _replay(repo_dir: Path, sha: str, parent: str) -> str:
         parent,
         "-m",
         body,
-        env={
-            "GIT_AUTHOR_NAME": who[0],
-            "GIT_AUTHOR_EMAIL": who[1],
-            "GIT_AUTHOR_DATE": who[2],
-        },
+        env=dict(zip(fields, who, strict=True)),
     )

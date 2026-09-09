@@ -123,7 +123,10 @@ def html_dir(tmp_path: Path) -> Path:
 
 def add_commits(repo: Path, count: int) -> None:
     """Append ``count`` commits whose messages carry a trailer paragraph."""
-    for index in range(count):
+    # a second call has to keep numbering where the first stopped, or its
+    # identical files stage nothing and git refuses the commit
+    start = len(list(repo.glob("note-*.txt")))
+    for index in range(start, start + count):
         (repo / f"note-{index}.txt").write_text(f"{index}\n", encoding="utf-8")
         git(repo, "add", "-A")
         git(repo, "commit", "-m", f"Note {index}\n\nDeployed-version: 0.{index}")

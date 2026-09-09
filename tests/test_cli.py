@@ -278,25 +278,50 @@ def test_retitle_and_delete(release_repo: Path, capsys: pytest.CaptureFixture) -
 
 def test_prune(site_repo: Path, capsys: pytest.CaptureFixture) -> None:
     """A rewrite is summarized on stdout and warned about on stderr."""
+    base = git(site_repo, "rev-parse", "HEAD")
     add_commits(site_repo, 5)
-    assert main(["prune", "--repo", str(site_repo), "--keep", "2"]) == 0
+    argv = ["prune", "--repo", str(site_repo), "--keep", "2", "--base", base]
+    assert main(argv) == 0
 
     captured = capsys.readouterr()
-    assert "4 commits squashed into a new root, 2 preserved" in captured.out
+    assert f"3 commits squashed onto {base[:8]}, 2 preserved" in captured.out
     assert "WARNING: history was rewritten" in captured.err
     assert "git push --force-with-lease origin main" in captured.err
-    assert int(git(site_repo, "rev-list", "--count", "HEAD")) == 3
+    assert int(git(site_repo, "rev-list", "--count", "HEAD")) == 4
+
+
+def test_prune_min_squash_waits(site_repo: Path, capsys: pytest.CaptureFixture) -> None:
+    """Under the batch size the command says what it is waiting for."""
+    base = git(site_repo, "rev-parse", "HEAD")
+    add_commits(site_repo, 4)
+    argv = ["prune", "--repo", str(site_repo), "--keep", "2", "--base", base]
+
+    assert main([*argv, "--min-squash", "3"]) == 0
+    assert (
+        f"nothing to prune: 2 commits since {base[:8]}, --min-squash is 3"
+        in capsys.readouterr().out
+    )
+    assert int(git(site_repo, "rev-list", "--count", "HEAD")) == 5
+
+    assert main([*argv, "--min-squash", "2"]) == 0
+    assert f"2 commits squashed onto {base[:8]}" in capsys.readouterr().out
+
+
+def test_prune_without_a_base(site_repo: Path, capsys: pytest.CaptureFixture) -> None:
+    """A first prune has nothing to default to, and says how to name a base."""
+    add_commits(site_repo, 3)
+    assert main(["prune", "--repo", str(site_repo), "--keep", "2"]) == 1
+    assert "--base REV" in capsys.readouterr().err
 
 
 def test_prune_push(
     site_repo: Path, bare_remote: Path, capsys: pytest.CaptureFixture
 ) -> None:
     """``--push`` force-pushes and says so instead of printing the command."""
+    base = git(site_repo, "rev-parse", "HEAD")
     add_commits(site_repo, 5)
-    assert (
-        main(["prune", "--repo", str(site_repo), "--keep-since", "HEAD~1", "--push"])
-        == 0
-    )
+    argv = ["prune", "--repo", str(site_repo), "--keep-since", "HEAD~1"]
+    assert main([*argv, "--base", base, "--push"]) == 0
 
     captured = capsys.readouterr()
     assert "Pushing main to origin with --force-with-lease" in captured.err
@@ -309,7 +334,7 @@ def test_prune_no_op(site_repo: Path, capsys: pytest.CaptureFixture) -> None:
     """Nothing to collapse is a quiet success."""
     assert main(["prune", "--repo", str(site_repo), "--keep", "1"]) == 0
     captured = capsys.readouterr()
-    assert "nothing to prune" in captured.out
+    assert "nothing to prune: 0 commits since" in captured.out
     assert captured.err == ""
 
 

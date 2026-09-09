@@ -117,14 +117,28 @@ def _build_parser() -> argparse.ArgumentParser:
     delete_.set_defaults(func=_run_delete)
 
     prune_ = subparsers.add_parser(
-        "prune", help="collapse history older than an anchor into one commit"
+        "prune", help="squash history older than the kept window onto a base commit"
     )
-    anchor = prune_.add_mutually_exclusive_group(required=True)
-    anchor.add_argument(
+    window = prune_.add_mutually_exclusive_group(required=True)
+    window.add_argument(
         "--keep", type=int, metavar="N", help="number of commits to preserve"
     )
-    anchor.add_argument(
+    window.add_argument(
         "--keep-since", metavar="REV", help="oldest revision to preserve"
+    )
+    prune_.add_argument(
+        "--base",
+        metavar="REV",
+        help="commit to squash onto, left untouched with its ancestors "
+        "(default: the commit a previous prune squashed onto)",
+    )
+    prune_.add_argument(
+        "--min-squash",
+        type=int,
+        default=1,
+        metavar="N",
+        help="only rewrite when at least N commits would be squashed; below "
+        "that the history is left alone",
     )
     _add_repo_arguments(prune_)
     prune_.set_defaults(func=_run_prune)
@@ -285,14 +299,22 @@ def _run_delete(args: argparse.Namespace) -> int:
 
 def _run_prune(args: argparse.Namespace) -> int:
     result = prune(
-        args.repo, keep=args.keep, keep_since=args.keep_since, push=args.push
+        args.repo,
+        keep=args.keep,
+        keep_since=args.keep_since,
+        base=args.base,
+        min_squash=args.min_squash,
+        push=args.push,
     )
     if not result.squashed:
-        print(f"nothing to prune: {result.branch} is already {result.kept} commits")
+        print(
+            f"nothing to prune: {result.pending} commits since "
+            f"{result.base[:8]}, --min-squash is {args.min_squash}"
+        )
         return 0
     print(
         f"{result.tip[:8]} pruned {result.branch}: {result.squashed} commits squashed "
-        f"into a new root, {result.kept} preserved"
+        f"onto {result.base[:8]}, {result.kept} preserved"
     )
     print(
         f"WARNING: history was rewritten; every existing clone of {result.branch} "

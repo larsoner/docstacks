@@ -74,7 +74,7 @@ docstacks deploy <html-dir> <version> --repo <checkout> [--alias stable]
 docstacks promote <html-dir> <version> --repo <checkout> [--alias stable]
 docstacks retitle <version> <name> --repo <checkout>
 docstacks delete <version> --repo <checkout>
-docstacks prune --repo <checkout> (--keep N | --keep-since REV)
+docstacks prune --repo <checkout> (--keep N | --keep-since REV) [--base REV] [--min-squash N]
 ```
 
 #### `promote`
@@ -91,15 +91,18 @@ Both carry their own trailer (`Deleted-version:`, `Retitled-version:`) so that e
 
 #### `prune`
 
-**Retention-anchored history squashing**: history older than the retention anchor is collapsed, but the result is *not* a single orphan commit. Squashing everything to one commit is the obvious approach and it is wrong here — it invalidates every previously fetched shallow clone, forces every CI job to re-download the whole tree, and destroys the `Deployed-version:`/`Source-sha:` provenance for versions still on the site. Instead, commits from the anchor to the tip keep their tree, message, author, and author date, and only the pre-anchor tail becomes one synthetic root.
+**Windowed history squashing onto a kept base**: the last N commits (or everything since a given revision) are preserved exactly, everything between that window and a *base* commit is collapsed into a single squash commit whose parent is the base, and the base and all of its ancestors are left alone. Collapsing the tail into one parentless root is the obvious approach and it is wrong twice over. It invalidates every previously fetched shallow clone, forces every CI job to re-download the whole tree, and destroys the `Deployed-version:`/`Source-sha:` provenance for versions still on the site; worse, it makes the push itself impossible. Git offers the remote a thin pack only for objects reachable from a commit both ends already have, so a rewritten history that shares no commit with the remote re-sends every tree and blob on the site. On MNE's 6 GB site that came out as a 2.59 GiB pack and GitHub rejected it outright — `pack exceeds maximum allowed size (2.00 GiB)` — while the same push with the base kept as the squash commit's parent is around 400 MB, because everything the remote already has hangs off a commit the two sides share.
+
+After the first run the base is *found*, not configured: it defaults to the most recent ancestor of the window whose subject is `Squashed history (docstacks prune)`, which is precisely the commit the previous prune wrote. A history that has never been pruned has to be told once with `--base REV` — for MNE, the last hand-made "Archive 1.11" commit — and every run after that inherits it. `--min-squash N` then refuses to rewrite until N commits have accumulated between the base and the window, so a job that runs after every deploy squashes in batches instead of adding a link to the squash chain each time. That chain is the price of a thin push: a history that stayed bounded with no chain at all would mean creating the commits server-side through GitHub's Data API rather than pushing them, which is future work.
 
 The rewrite is done with **`git commit-tree`, never a rebase or a cherry-pick**. A rebase replays *diffs*, which on a multi-gigabyte documentation tree means materializing and re-hashing every file in every commit — hours of work to reproduce content that already exists. `commit-tree` re-parents the tree objects git already has: the surviving commits point at byte-identical trees, so the operation is O(number of commits) and cannot alter content even in principle. Concretely:
 
-1. Resolve the anchor (`HEAD~(N-1)` for `--keep N`, or the given revision), and require it to be an ancestor of `HEAD`.
-2. If the anchor has no parent it is already the root — nothing to collapse, exit 0 saying so.
-3. Build the new root: `git commit-tree <tree of anchor^> -m "Squashed history (docstacks prune)"`. Its tree is the state of the site immediately before the retention window, so the first surviving commit's diff is still meaningful.
-4. Walk `git rev-list --reverse <anchor>^..HEAD` — which is inclusive of the anchor, the boundary that is easy to get wrong — re-creating each commit as `git commit-tree <its tree> -p <new parent> -m <its full message>` with `GIT_AUTHOR_NAME`/`EMAIL`/`DATE` restored from the original. The committer becomes whoever ran `prune`, which is accurate: they are the one who made these commit objects.
-5. `git update-ref refs/heads/<branch>` to the new tip and `git reset --hard` to resync the index.
+1. Resolve the window's oldest commit (`HEAD~(N-1)` for `--keep N`, or the given revision), and require it to be an ancestor of `HEAD`.
+2. If it has no parent it is already the root — there is nothing older to collapse, exit 0 saying so.
+3. Resolve the base, explicit or inherited, and require it to be an ancestor of `HEAD` and older than the window. A base already sitting at the window's edge, or fewer than `--min-squash` commits between it and the window, is likewise nothing to do.
+4. Build the squash commit: `git commit-tree <tree of the window's parent> -p <base> -m "Squashed history (docstacks prune)"`. Its tree is the state of the site immediately before the window, so the first surviving commit's diff is still meaningful, and its parent is a commit the remote already has.
+5. Walk `git rev-list --reverse <oldest>^..HEAD` — which is inclusive of the oldest kept commit, the boundary that is easy to get wrong — re-creating each commit as `git commit-tree <its tree> -p <new parent> -m <its full message>` with `GIT_AUTHOR_*` and `GIT_COMMITTER_*` both restored from the original. Preserving the committer as well as the author is what keeps the kept window's dates honest: stamping the pruner's clock on it would make a decade of deploys look like they all happened the day someone ran `prune`.
+6. `git update-ref refs/heads/<branch>` to the new tip and `git reset --hard` to resync the index.
 
 `--push` means `git push --force-with-lease`, and the command says loudly on stderr that history was rewritten. Without it, the exact push command is printed rather than run, because rewriting a published docs branch is not something to do by accident.
 
