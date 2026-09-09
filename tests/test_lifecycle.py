@@ -215,12 +215,13 @@ def test_prune_keep_since(site_repo: Path) -> None:
     assert history(site_repo)[:2] == before[:2]
 
 
-def test_prune_no_op_when_anchor_is_root(site_repo: Path) -> None:
-    """Asking to keep everything rewrites nothing."""
+@pytest.mark.parametrize("keep", [6, 99])
+def test_prune_no_op_when_anchor_is_root(site_repo: Path, keep: int) -> None:
+    """Asking to keep everything, or more than exists, rewrites nothing."""
     add_commits(site_repo, 5)
     before = history(site_repo)
 
-    result = prune(site_repo, keep=6)
+    result = prune(site_repo, keep=keep)
 
     assert (result.kept, result.squashed) == (6, 0)
     assert result.tip == git(site_repo, "rev-parse", "HEAD")
@@ -240,7 +241,6 @@ def test_prune_push(site_repo: Path, bare_remote: Path) -> None:
         ({}, "exactly one"),
         ({"keep": 2, "keep_since": "HEAD"}, "exactly one"),
         ({"keep": 0}, "at least 1"),
-        ({"keep": 99}, "has only 6"),
         ({"keep_since": "nope"}, "unknown revision"),
     ],
 )

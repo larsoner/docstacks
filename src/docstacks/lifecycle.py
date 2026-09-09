@@ -216,8 +216,8 @@ def prune(
         Checkout of the site repository. Must be a clean git working tree with a
         branch checked out.
     keep : int | None
-        Number of commits to preserve, counting ``HEAD``. Mutually exclusive
-        with ``keep_since``.
+        Number of commits to preserve, counting ``HEAD``. A history that short
+        or shorter is left alone. Mutually exclusive with ``keep_since``.
     keep_since : str | None
         Revision to use as the anchor, preserved along with everything after it.
     push : bool
@@ -242,9 +242,8 @@ def prune(
     if keep is not None:
         if keep < 1:
             raise DeployError(f"keep must be at least 1, got {keep}")
-        if keep > total:
-            raise DeployError(f"cannot keep {keep} commits, {branch} has only {total}")
-        anchor = f"HEAD~{keep - 1}"
+        # a short history is nothing to collapse, so a CI job can run this every deploy
+        anchor = f"HEAD~{min(keep, total) - 1}"
 
     anchor_sha = _git.try_git(
         repo_path, "rev-parse", "--verify", "--quiet", f"{anchor}^{{commit}}"
