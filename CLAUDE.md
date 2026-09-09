@@ -32,7 +32,7 @@ The first prune of a repository has to name its base — for MNE `--base cc8eb01
 The redesign was forced on 2026-09-09: collapsing everything older into a parentless root shares no commit with the remote, so git re-sent the entire 6 GB tree as a 2.59 GiB pack and GitHub refused it at its 2 GiB limit.
 A history that stayed bounded with no squash chain at all would mean creating the commits server-side through GitHub's Data API instead of pushing a disjoint history; that is future work, not something to start without a design conversation.
 
-Adoptable today: a scheduled `docstacks validate https://mne.tools/versions.json --check-urls --check-match --ignore 1.1 --ignore 1.0 --ignore 0.24 --ignore 0.23 --ignore 0.22 --ignore 0.21 --ignore 0.20` (the ignores are pre-pydata-theme archives that can never carry a `version_match`, plus the intentional `0.20` catch-all that points into `dev/old_versions/`).
+Adoptable today: a scheduled `docstacks validate https://mne.tools/versions.json --check-urls --check-match --ignore 0.20` (`0.20` is the hand-made catch-all entry pointing at `dev/old_versions/`; the pre-pydata-theme versions 0.21 to 1.1 were taken offline in September 2026 and live as zips on the `docs-archive` release of mne-tools/mne-data, so they no longer have entries).
 
 ### Other scientific-python consumers (rough adoption order)
 
