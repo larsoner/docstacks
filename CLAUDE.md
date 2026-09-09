@@ -26,7 +26,7 @@ The CI step still passes `--alias stable` when `readlink stable` in the site che
 Release day is now `cp -a 1.13 /tmp/1.13-html && docstacks promote /tmp/1.13-html 1.13 --repo . --base-url https://mne.tools/ --push` followed by `docstacks retitle dev "1.14 (dev)" --push` in a clean clone of the site repo; the temp copy exists because `promote` deletes the target directory before copying the HTML in.
 The first `[circle deploy]` on a new `maint/X.Y` branch adds that version's manifest entry automatically (non-preferred, pointing at its own directory), so nothing is hand-edited any more.
 One tool follow-up is still outstanding from this: `promote` should accept an already-deployed version without new HTML.
-Still to come: `prune` to replace MNE's annual manual history squash, anchored via the `Deployed-version:` commit trailers.
+`prune --keep 20` replaces MNE's manual history squash; a dry run on the real site history (2026-09-09) took under a second, kept the tree byte-identical, and cut reachable data from 5.1 GiB to 2.3 GiB, versus 4.0 GiB for the old squash-to-archive-commit ritual.
 
 Adoptable today: a scheduled `docstacks validate https://mne.tools/versions.json --check-urls --check-match --ignore 1.1 --ignore 1.0 --ignore 0.24 --ignore 0.23 --ignore 0.22 --ignore 0.21 --ignore 0.20` (the ignores are pre-pydata-theme archives that can never carry a `version_match`, plus the intentional `0.20` catch-all that points into `dev/old_versions/`).
 
