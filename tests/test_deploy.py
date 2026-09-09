@@ -66,23 +66,85 @@ def test_deploy_custom_message_without_source_sha(
     assert "Source-sha" not in body
 
 
-def test_deploy_redeploy_replaces_and_infers_base_url(
-    html_dir: Path, site_repo: Path
+@pytest.mark.parametrize("relabel", [None, "1.11 LTS"])
+def test_deploy_redeploy_keeps_the_alias_it_already_has(
+    html_dir: Path, site_repo: Path, relabel: str | None
 ) -> None:
-    """Stale files go, the entry is updated rather than duplicated, and its base
-    URL comes from the URL already recorded for it."""
+    """Stale files go, the entry is updated rather than duplicated, its base URL
+    comes from the URL already recorded for it, and the ``stable`` it already
+    carries keeps supplying that URL without being repeated or rewritten -- and
+    without relabeling an entry that was retitled by hand."""
+    path = site_repo / "versions.json"
+    if relabel is not None:
+        Manifest.load(path).retitle("1.11", relabel).dump(path)
+        git(site_repo, "commit", "-am", "Hand-label 1.11")
+
     deploy(html_dir, "1.11", site_repo)
 
     assert not (site_repo / "1.11" / "style.css").exists()
     assert (site_repo / "1.11" / "index.html").read_text() == "<html>1.12</html>"
-    manifest = Manifest.load(site_repo / "versions.json")
+    assert os.readlink(site_repo / "stable") == "1.11"
+    manifest = Manifest.load(path)
     assert [entry.version for entry in manifest] == ["dev", "1.11", "legacy"]
-    assert manifest.entries[1].url == "https://mne.tools/1.11/"
-    assert manifest.entries[1].name == "1.11 (stable)"
+    assert manifest.entries[1].url == "https://mne.tools/stable/"
+    assert manifest.entries[1].name == (relabel or "1.11 (stable)")
+    assert manifest.entries[1].preferred
+
+
+def test_deploy_redeploy_unaliased_version(html_dir: Path, site_repo: Path) -> None:
+    """A version nothing points at still goes back to its own directory URL."""
+    deploy(html_dir, "dev", site_repo)
+
+    manifest = Manifest.load(site_repo / "versions.json")
+    entry = manifest.entries[0]
+    assert (entry.version, entry.url, entry.name) == (
+        "dev",
+        "https://mne.tools/dev/",
+        "1.12 (dev)",
+    )
+    assert [item.version for item in manifest if item.preferred] == ["1.11"]
+
+
+def test_deploy_alongside_an_existing_alias(html_dir: Path, site_repo: Path) -> None:
+    """A new alias joins the one already there, which still supplies the URL."""
+    deploy(html_dir, "1.11", site_repo, aliases=("current",))
+
+    assert os.readlink(site_repo / "current") == "1.11"
+    assert os.readlink(site_repo / "stable") == "1.11"
+    entry = Manifest.load(site_repo / "versions.json").get("1.11")
+    assert entry is not None
+    assert entry.url == "https://mne.tools/stable/"
+
+
+def test_deploy_keeps_an_alias_chain(html_dir: Path, site_repo: Path) -> None:
+    """pandas-style ``stable -> 2.1 -> 2.1.3`` counts, and is not flattened."""
+    (site_repo / "stable").unlink()
+    (site_repo / "2.1.3").mkdir()
+    (site_repo / "2.1.3" / "index.html").write_text(
+        "<html>2.1.3</html>", encoding="utf-8"
+    )
+    os.symlink("2.1.3", site_repo / "2.1", target_is_directory=True)
+    os.symlink("2.1", site_repo / "stable", target_is_directory=True)
+    git(site_repo, "add", "-A")
+    git(site_repo, "commit", "-m", "Chain stable at 2.1.3")
+
+    deploy(html_dir, "2.1.3", site_repo, base_url=BASE_URL)
+
+    assert os.readlink(site_repo / "stable") == "2.1"
+    assert os.readlink(site_repo / "2.1") == "2.1.3"
+    entry = Manifest.load(site_repo / "versions.json").get("2.1.3")
+    assert entry is not None
+    # the inherited alias decides the URL and the flag, but never writes a label
+    assert (entry.url, entry.name, entry.preferred) == (
+        "https://mne.tools/stable/",
+        None,
+        True,
+    )
 
 
 def test_deploy_relabels_existing_entry(html_dir: Path, site_repo: Path) -> None:
-    """An explicit name replaces the old one, and base URLs need no trailing slash."""
+    """An explicit name replaces the generated one, even on an aliased version, and
+    base URLs need no trailing slash."""
     deploy(
         html_dir,
         "1.11",
@@ -93,7 +155,7 @@ def test_deploy_relabels_existing_entry(html_dir: Path, site_repo: Path) -> None
     entry = Manifest.load(site_repo / "versions.json").get("1.11")
     assert entry is not None
     assert entry.name == "1.11 (archived)"
-    assert entry.url == "https://mne.tools/1.11/"
+    assert entry.url == "https://mne.tools/stable/"
 
 
 def test_deploy_retargets_alias(html_dir: Path, site_repo: Path) -> None:
@@ -271,6 +333,11 @@ def test_deploy_refuses_no_op(html_dir: Path, site_repo: Path) -> None:
     deploy(html_dir, "1.12", site_repo, base_url=BASE_URL)
     with pytest.raises(DeployError, match="nothing to deploy"):
         deploy(html_dir, "1.12", site_repo, base_url=BASE_URL)
+
+    # an aliased version is the case where the manifest used to change on its own
+    deploy(html_dir, "1.11", site_repo)
+    with pytest.raises(DeployError, match="nothing to deploy"):
+        deploy(html_dir, "1.11", site_repo)
 
 
 def test_deploy_refuses_detached_head_before_writing(

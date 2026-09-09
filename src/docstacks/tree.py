@@ -129,6 +129,17 @@ def _pick_alias(names: list[str]) -> str | None:
     return PREFERRED_ALIAS if PREFERRED_ALIAS in names else names[0]
 
 
+def _aliases_pointing_at(site_dir: str | os.PathLike[str], version: str) -> list[str]:
+    """Names of root symlinks whose chain ends at ``version``."""
+    root = os.path.realpath(site_dir)
+    with os.scandir(site_dir) as scan:
+        return sorted(
+            item.name
+            for item in scan
+            if item.is_symlink() and _symlink_target(item.path, root) == version
+        )
+
+
 def _symlink_target(path: str, root: str) -> str | None:
     """Name of the real directory a symlink chain ends at, if it stays in ``root``."""
     parent, name = os.path.split(os.path.realpath(path))

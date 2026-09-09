@@ -158,7 +158,8 @@ def _add_deploy_arguments(parser: argparse.ArgumentParser) -> None:
         action="append",
         dest="aliases",
         metavar="NAME",
-        help="symlink NAME at the site root to this version (repeatable)",
+        help="symlink NAME at the site root to this version (repeatable); "
+        "aliases already pointing at it keep supplying its URL unrepeated",
     )
     parser.add_argument("--base-url", help="absolute URL the site is served from")
     parser.add_argument("--name", help="display label for the manifest entry")

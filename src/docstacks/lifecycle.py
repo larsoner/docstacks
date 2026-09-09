@@ -24,7 +24,7 @@ from docstacks._repo import (
 from docstacks._repo import push as push_branch
 from docstacks.deploy import DEFAULT_MANIFEST
 from docstacks.manifest import Manifest
-from docstacks.tree import _symlink_target
+from docstacks.tree import _aliases_pointing_at
 
 __all__ = ["PruneResult", "delete", "prune", "retitle"]
 
@@ -297,14 +297,3 @@ def _replay(repo_dir: Path, sha: str, parent: str) -> str:
             "GIT_AUTHOR_DATE": who[2],
         },
     )
-
-
-def _aliases_pointing_at(repo_dir: Path, version: str) -> list[str]:
-    """Names of root symlinks whose chain ends at ``version``."""
-    root = os.path.realpath(repo_dir)
-    with os.scandir(repo_dir) as scan:
-        return sorted(
-            item.name
-            for item in scan
-            if item.is_symlink() and _symlink_target(item.path, root) == version
-        )

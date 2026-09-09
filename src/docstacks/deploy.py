@@ -6,9 +6,12 @@ its root that ``docstacks`` does not own (``CNAME``, ``.nojekyll``, a landing
 ``index.html``, foreign version directories, aliases it was not asked about)
 survives a deploy untouched; that invariant is the whole point of the module.
 
-:func:`deploy` writes what it is told and nothing more. :func:`promote` is the
-release-day variant that also demotes whatever the new alias just took over, so
-the manifest never claims that ``/stable/`` serves a version it no longer does.
+:func:`deploy` writes what it is told, and counts the aliases already pointing
+at the version being deployed -- so a bugfix redeploy of the current stable
+release stays stable without repeating ``--alias stable``, and is not relabeled
+for having inherited one. :func:`promote` is the release-day variant that also
+demotes whatever the new alias just took over, so the manifest never claims that
+``/stable/`` serves a version it no longer does.
 """
 
 from __future__ import annotations
@@ -28,7 +31,13 @@ from docstacks._repo import (
 )
 from docstacks._repo import push as push_branch
 from docstacks.manifest import Entry, Manifest
-from docstacks.tree import PREFERRED_ALIAS, VERSION_RE, _pick_alias, version_key
+from docstacks.tree import (
+    PREFERRED_ALIAS,
+    VERSION_RE,
+    _aliases_pointing_at,
+    _pick_alias,
+    version_key,
+)
 
 __all__ = ["DeployError", "deploy", "promote"]
 
@@ -63,17 +72,18 @@ def deploy(
     aliases : sequence of str
         Alias names to point at ``version``, created as relative symlinks at the
         repository root. An alias that already exists as a real directory is an
-        error rather than something to overwrite. Aliases are not remembered
-        between deploys: redeploying a version without repeating its alias moves
-        the manifest URL back to the version directory.
+        error rather than something to overwrite. Aliases already pointing at
+        ``version`` are kept: redeploying without repeating them leaves their
+        symlinks alone and keeps the manifest URL they supply.
     base_url : str | None
         Absolute URL the site is served from. Required when adding a new
         manifest entry; when updating an existing one it is inferred from that
         entry's current URL.
     name : str | None
         Display label for the manifest entry. Defaults to ``"<version>
-        (<alias>)"`` when aliased, and is left alone when updating an entry that
-        already has one.
+        (<alias>)"`` when an alias is requested; an alias merely inherited from
+        the previous deploy generates no label, so an entry retitled by hand
+        keeps its name across a redeploy.
     manifest_path : str | None
         Manifest to update, relative to ``repo_dir``. ``None`` skips the
         manifest entirely.
@@ -140,7 +150,9 @@ def promote(
     repo_dir : path-like
         Checkout of the site repository. Must be a clean git working tree.
     aliases : sequence of str
-        Aliases to point at ``version``, defaulting to ``("stable",)``.
+        Aliases to point at ``version``, defaulting to ``("stable",)``. Aliases
+        already pointing at ``version`` supply its URL and preferred flag too,
+        without being recreated.
     base_url : str | None
         Absolute URL the site is served from, also used for the demoted URLs.
     name : str | None
@@ -194,6 +206,13 @@ def _deploy(
 
     _check_inputs(html_path, version, repo_path, alias_names, manifest_path, push)
 
+    # counted but never rewritten, so a chain such as stable -> 2.1 -> 2.1.3 survives
+    existing = tuple(
+        alias
+        for alias in _aliases_pointing_at(repo_path, version)
+        if alias not in alias_names
+    )
+
     target = repo_path / version
     if target.is_dir() and not target.is_symlink():
         shutil.rmtree(target)
@@ -211,7 +230,9 @@ def _deploy(
     if manifest_path is not None:
         full = repo_path / manifest_path
         manifest = Manifest.load(full) if full.is_file() else Manifest()
-        _update_manifest(manifest, version, alias_names, base_url, name, demote)
+        _update_manifest(
+            manifest, version, alias_names, existing, base_url, name, demote
+        )
         manifest.dump(full)
         staged.append(manifest_path)
 
@@ -269,18 +290,21 @@ def _update_manifest(
     manifest: Manifest,
     version: str,
     aliases: Sequence[str],
+    inferred: Sequence[str],
     base_url: str | None,
     name: str | None,
     demote: bool,
 ) -> None:
     """Insert or refresh the entry for ``version``, keeping the file's order."""
     base = _resolve_base_url(manifest, version, base_url)
-    outgoing = _outgoing(manifest, version, aliases, base) if demote else []
+    holders = (*aliases, *inferred)
+    outgoing = _outgoing(manifest, version, holders, base) if demote else []
 
     entry = manifest.get(version)
-    alias = _pick_alias(list(aliases))
+    alias = _pick_alias(list(holders))
     url = base + (alias or version) + "/"
-    if name is None and alias is not None:
+    # an inferred alias supplies the URL but never a label, so a retitle survives
+    if name is None and aliases:
         name = f"{version} ({alias})"
     if entry is None:
         manifest.add(version, url, name, position=_insert_position(manifest, version))
@@ -288,11 +312,11 @@ def _update_manifest(
         entry.url = url
         if name is not None:
             entry.name = name
-    if PREFERRED_ALIAS in aliases:
+    if PREFERRED_ALIAS in holders:
         manifest.set_preferred(version)
 
     for stale in outgoing:
-        if stale.name in {f"{stale.version} ({alias})" for alias in aliases}:
+        if stale.name in {f"{stale.version} ({holder})" for holder in holders}:
             stale.name = None
         stale.url = base + stale.version + "/"
 
