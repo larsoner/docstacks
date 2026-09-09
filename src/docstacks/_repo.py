@@ -7,6 +7,7 @@ refusal leaves the working tree exactly as it was found.
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -71,5 +72,8 @@ def push(repo_dir: Path, *, force_with_lease: bool = False) -> str:
     args = ["push"]
     if force_with_lease:
         args.append("--force-with-lease")
-    _git.git(repo_dir, *args, "origin", branch)
+    # announce it and let git's own progress through: a site push can take minutes
+    how = " with --force-with-lease" if force_with_lease else ""
+    print(f"Pushing {branch} to origin{how} ...", file=sys.stderr, flush=True)
+    _git.git(repo_dir, *args, "origin", branch, stream=True)
     return branch

@@ -29,3 +29,13 @@ def test_has_staged_changes(site_repo: Path) -> None:
     assert not _git.has_staged_changes(site_repo)
     git(site_repo, "add", "CNAME")
     assert _git.has_staged_changes(site_repo)
+
+
+def test_git_stream_passes_stderr_through(
+    site_repo: Path, capfd: pytest.CaptureFixture
+) -> None:
+    """With ``stream`` git talks to the terminal itself, so stderr is not captured."""
+    with pytest.raises(_git.GitError) as excinfo:
+        _git.git(site_repo, "rev-parse", "--verify", "no-such-ref", stream=True)
+    assert "fatal" not in str(excinfo.value)
+    assert "fatal" in capfd.readouterr().err

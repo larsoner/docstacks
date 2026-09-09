@@ -23,6 +23,7 @@ def git(
     repo_dir: str | os.PathLike[str],
     *args: str,
     env: Mapping[str, str] | None = None,
+    stream: bool = False,
 ) -> str:
     """Run a git command inside ``repo_dir``.
 
@@ -34,13 +35,16 @@ def git(
         Arguments to pass to ``git``.
     env : mapping | None
         Extra environment variables, layered over the current environment.
+    stream : bool
+        Let git write to the caller's stderr instead of capturing it, so a
+        long-running command such as ``push`` shows its progress on a terminal.
 
     Returns
     -------
     output : str
         Stripped standard output.
     """
-    process = _run(repo_dir, *args, env=env)
+    process = _run(repo_dir, *args, env=env, stream=stream)
     if process.returncode != 0:
         detail = (process.stderr or process.stdout).strip()
         raise GitError(f"git {' '.join(args)} failed in {repo_dir}: {detail}")
@@ -118,11 +122,13 @@ def _run(
     repo_dir: str | os.PathLike[str],
     *args: str,
     env: Mapping[str, str] | None = None,
+    stream: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
         cwd=os.fspath(repo_dir),
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=None if stream else subprocess.PIPE,
         text=True,
         check=False,
         env=None if env is None else {**os.environ, **env},

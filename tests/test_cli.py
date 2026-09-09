@@ -299,6 +299,7 @@ def test_prune_push(
     )
 
     captured = capsys.readouterr()
+    assert "Pushing main to origin with --force-with-lease" in captured.err
     assert "force-pushed to origin" in captured.err
     assert "git push --force-with-lease" not in captured.err
     assert git(bare_remote, "rev-parse", "main") == git(site_repo, "rev-parse", "HEAD")
